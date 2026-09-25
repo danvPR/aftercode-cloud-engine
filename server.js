@@ -7,7 +7,7 @@ app.use(cors());
 app.use(express.json());
 
 // Thay chuỗi kết nối MongoDB của bạn vào đây:
-const MONGO_URI = "mongodb+srv://<username>:<password>@studiodanv.xxxx.mongodb.net/aftercode_db?retryWrites=true&w=majority";
+const MONGO_URI = "mongodb://studiodanv_db_user:U054mgoM0sBzPtAL@ac-ymskw8m-shard-00-00.my0r9ky.mongodb.net:27017,ac-ymskw8m-shard-00-01.my0r9ky.mongodb.net:27017,ac-ymskw8m-shard-00-02.my0r9ky.mongodb.net:27017/?ssl=true&replicaSet=atlas-g3l1co-shard-0&authSource=admin&appName=StudioDANV";
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ Đã kết nối MongoDB Atlas!"))
