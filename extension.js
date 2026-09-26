@@ -6,14 +6,90 @@
   const DEFAULT_SERVER = "https://aftercode-cloud-engine.onrender.com";
   let cacheCooldownMs = 2000;
   const HOVER_DELAY = 450; 
+  const REQUEST_TIMEOUT_MS = 8000; // Timeout 8s cho toàn bộ request
 
   let currentServerUrl = DEFAULT_SERVER;
   let lastRequestTime = 0;
   
+  let currentProjectId = "default_project";
+  let isEmbeddedMode = false;
+  let defaultUsername = "Player1";
+  
+  const localMemoryCache = new Map();
+  const localCloudVars = new Map();
+
   let currentLoadedScore = 0;
   let currentLoadedData = "{}";
   let currentBatchData = "{}";
   let dbStatus = "IDLE";
+
+  function isEmbedded() {
+    try {
+      return window.self !== window.top;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  try {
+    if (typeof window !== "undefined" && window.location) {
+      const searchParams = new URLSearchParams(window.location.search);
+      const urlPid = searchParams.get("project") || searchParams.get("projectId");
+      if (urlPid) currentProjectId = urlPid.trim();
+    }
+  } catch (e) {}
+
+  if (typeof window !== "undefined") {
+    if (!isEmbedded()) {
+      isEmbeddedMode = false;
+      dbStatus = "EDITOR_LOCAL_CACHE";
+    } else {
+      isEmbeddedMode = true;
+      dbStatus = "EMBED_CONNECTING";
+      window.parent.postMessage({ type: "DANV_CLOUD_HANDSHAKE" }, "*");
+    }
+
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+      if (data.type === "DANV_CLOUD_INIT" || data.type === "DANV_WOW_INIT") {
+        isEmbeddedMode = true;
+        if (data.projectId) currentProjectId = String(data.projectId);
+        if (data.username) defaultUsername = String(data.username);
+        dbStatus = "ONLINE";
+      }
+    });
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function getLocalKey(user, key = "data") {
+    return `DANV_LOCAL_${currentProjectId}_${user}_${key}`;
+  }
+  function saveToLocal(user, key, val) {
+    const fullKey = getLocalKey(user, key);
+    localMemoryCache.set(fullKey, val);
+    try { if (typeof localStorage !== "undefined") localStorage.setItem(fullKey, String(val)); } catch (e) {}
+  }
+  function loadFromLocal(user, key, fallback = "") {
+    const fullKey = getLocalKey(user, key);
+    if (localMemoryCache.has(fullKey)) return localMemoryCache.get(fullKey);
+    try {
+      if (typeof localStorage !== "undefined") {
+        const val = localStorage.getItem(fullKey);
+        if (val !== null) { localMemoryCache.set(fullKey, val); return val; }
+      }
+    } catch (e) {}
+    return fallback;
+  }
 
   function getLang() {
     let lang = "";
@@ -39,6 +115,9 @@
   }
 
   const BLOCK_META = {
+    setCloudVarAndWait: { title: { vi: "Đặt biến Cloud", en: "Set Cloud Var" }, type: "COMMAND", desc: { vi: "Lưu một biến Cloud độc lập theo khóa. Tại Editor chỉ lưu cache tạm.", en: "Saves an independent Cloud variable by key. In Editor, saves to local cache only." }, output: null },
+    loadCloudVarAndWait: { title: { vi: "Tải biến Cloud", en: "Load Cloud Var" }, type: "COMMAND", desc: { vi: "Tải giá trị của một biến Cloud độc lập theo khóa.", en: "Downloads an independent Cloud variable by key." }, output: { vi: "Nạp vào bộ đệm biến", en: "Populates variable cache" } },
+    getCloudVar: { title: { vi: "Giá trị biến Cloud", en: "Cloud Var Value" }, type: "REPORTER", desc: { vi: "Đọc tức thì giá trị biến Cloud từ bộ đệm.", en: "Returns the cached cloud variable value instantly." }, output: null },
     setServerUrl: { title: { vi: "Cấu hình máy chủ", en: "Set Server URL" }, type: "COMMAND", desc: { vi: "Thiết lập địa chỉ máy chủ API.", en: "Sets the backend API server URL." }, output: null },
     pingServer: { title: { vi: "Kiểm tra kết nối", en: "Ping Server" }, type: "COMMAND", desc: { vi: "Gửi gói tin ping kiểm tra máy chủ.", en: "Sends a ping packet to test server." }, output: { vi: "Cập nhật vào 'trạng thái máy chủ'", en: "Updates 'server status' reporter" } },
     getStatus: { title: { vi: "Trạng thái máy chủ", en: "Server Status" }, type: "REPORTER", desc: { vi: "Lấy tình trạng kết nối gần nhất.", en: "Returns the latest connection status." }, output: { vi: "ONLINE, OFFLINE, SAVING, v.v.", en: "ONLINE, OFFLINE, SAVING, etc." } },
@@ -162,6 +241,29 @@
           },
           "---",
           {
+            opcode: "setCloudVarAndWait", blockType: Scratch.BlockType.COMMAND,
+            text: msg("☁ set cloud var [KEY] = [VAL] for user [USER] and wait", "☁ đặt biến cloud [KEY] = [VAL] cho tài khoản [USER] và chờ"),
+            arguments: {
+              KEY: { type: Scratch.ArgumentType.STRING, defaultValue: "coins" },
+              VAL: { type: Scratch.ArgumentType.STRING, defaultValue: "100" },
+              USER: { type: Scratch.ArgumentType.STRING, defaultValue: "Player1" }
+            }
+          },
+          {
+            opcode: "loadCloudVarAndWait", blockType: Scratch.BlockType.COMMAND,
+            text: msg("☁ load cloud var [KEY] for user [USER] and wait", "☁ tải biến cloud [KEY] của tài khoản [USER] và chờ"),
+            arguments: {
+              KEY: { type: Scratch.ArgumentType.STRING, defaultValue: "coins" },
+              USER: { type: Scratch.ArgumentType.STRING, defaultValue: "Player1" }
+            }
+          },
+          {
+            opcode: "getCloudVar", blockType: Scratch.BlockType.REPORTER,
+            text: msg("☁ cloud var [KEY]", "☁ giá trị biến cloud [KEY]"),
+            arguments: { KEY: { type: Scratch.ArgumentType.STRING, defaultValue: "coins" } }
+          },
+          "---",
+          {
             opcode: "saveDataAndWait", blockType: Scratch.BlockType.COMMAND,
             text: msg("☁ save: user [USER] | score [SCORE] | data [DATA] and wait", "☁ lưu dữ liệu: tài khoản [USER] | điểm [SCORE] | dữ liệu [DATA] và chờ"),
             arguments: {
@@ -253,47 +355,141 @@
     }
 
     async pingServer() {
+      if (!isEmbeddedMode) {
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
       dbStatus = "PINGING";
       try {
-        const res = await fetch(`${currentServerUrl}/ping`);
+        const res = await fetchWithTimeout(`${currentServerUrl}/ping`);
         dbStatus = res.ok ? "ONLINE" : "ERROR";
-      } catch (e) { dbStatus = "OFFLINE"; }
+      } catch (e) {
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
     }
     getStatus() { return dbStatus; }
 
+    async setCloudVarAndWait(args) {
+      const user = String(args.USER || defaultUsername);
+      const key = String(args.KEY).trim();
+      const val = String(args.VAL);
+      localCloudVars.set(key, val);
+
+      if (!isEmbeddedMode) {
+        saveToLocal(user, key, val);
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
+      lastRequestTime = now; dbStatus = "SAVING_VAR";
+      try {
+        const res = await fetchWithTimeout(`${currentServerUrl}/api/var/set`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: currentProjectId, username: user, key, value: val })
+        });
+        const json = await res.json();
+        dbStatus = json.success ? "SAVE_VAR_SUCCESS" : "SAVE_VAR_FAILED";
+      } catch (e) {
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
+    }
+
+    async loadCloudVarAndWait(args) {
+      const user = String(args.USER || defaultUsername);
+      const key = String(args.KEY).trim();
+
+      if (!isEmbeddedMode) {
+        const cachedVal = loadFromLocal(user, key, "");
+        localCloudVars.set(key, cachedVal);
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
+      lastRequestTime = now; dbStatus = "LOADING_VAR";
+      try {
+        const res = await fetchWithTimeout(`${currentServerUrl}/api/var/get`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: currentProjectId, username: user, key })
+        });
+        const json = await res.json();
+        if (json.success && json.value !== undefined) {
+          localCloudVars.set(key, String(json.value));
+          dbStatus = "LOAD_VAR_SUCCESS";
+        } else {
+          localCloudVars.set(key, "");
+          dbStatus = "NOT_FOUND";
+        }
+      } catch (e) {
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
+    }
+
+    getCloudVar(args) {
+      const key = String(args.KEY).trim();
+      return localCloudVars.has(key) ? localCloudVars.get(key) : "";
+    }
+
     async saveDataAndWait(args) {
+      const user = String(args.USER || defaultUsername);
+      const score = Number(args.SCORE) || 0;
+      const dataStr = String(args.DATA);
+
+      if (!isEmbeddedMode) {
+        saveToLocal(user, "score", score);
+        saveToLocal(user, "data", dataStr);
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
+
       const now = Date.now();
       if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
       lastRequestTime = now; dbStatus = "SAVING";
       try {
-        const res = await fetch(`${currentServerUrl}/api/save`, {
+        const res = await fetchWithTimeout(`${currentServerUrl}/api/save`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: String(args.USER), score: Number(args.SCORE) || 0, saveData: String(args.DATA) })
+          body: JSON.stringify({ projectId: currentProjectId, username: user, score, saveData: dataStr })
         });
         const json = await res.json();
         dbStatus = json.success ? "SAVE_SUCCESS" : "SAVE_FAILED";
-      } catch (e) { dbStatus = "OFFLINE"; }
+      } catch (e) {
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
     }
 
     async loadDataAndWait(args) {
+      const user = String(args.USER || defaultUsername);
+
+      if (!isEmbeddedMode) {
+        currentLoadedScore = Number(loadFromLocal(user, "score", 0)) || 0;
+        currentLoadedData = loadFromLocal(user, "data", "{}");
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
+
       const now = Date.now();
       if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
       lastRequestTime = now; dbStatus = "LOADING";
       try {
-        const res = await fetch(`${currentServerUrl}/api/load/${encodeURIComponent(args.USER)}`);
+        const res = await fetchWithTimeout(`${currentServerUrl}/api/load/${encodeURIComponent(currentProjectId)}/${encodeURIComponent(user)}`);
         const json = await res.json();
         if (json.success && json.data) {
-          currentLoadedScore = json.data.score || 0; currentLoadedData = json.data.saveData || ""; dbStatus = "LOAD_SUCCESS";
+          currentLoadedScore = json.data.score || 0;
+          currentLoadedData = json.data.saveData || "{}";
+          dbStatus = "LOAD_SUCCESS";
         } else {
           currentLoadedScore = 0; currentLoadedData = "{}"; dbStatus = "NOT_FOUND";
         }
-      } catch (e) { currentLoadedScore = 0; currentLoadedData = "{}"; dbStatus = "OFFLINE"; }
+      } catch (e) {
+        currentLoadedScore = 0; currentLoadedData = "{}";
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
     }
 
     async loadBatchAndWait(args) {
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      
       let keysArray = [];
       try {
         keysArray = JSON.parse(args.ARRAY);
@@ -303,11 +499,26 @@
         dbStatus = "INVALID_BATCH_ARRAY"; return;
       }
 
+      if (!isEmbeddedMode) {
+        const result = {};
+        keysArray.forEach(u => {
+          result[u] = {
+            score: Number(loadFromLocal(u, "score", 0)) || 0,
+            saveData: loadFromLocal(u, "data", "{}")
+          };
+        });
+        currentBatchData = JSON.stringify(result);
+        dbStatus = "EDITOR_LOCAL_CACHE";
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
       lastRequestTime = now; dbStatus = "LOADING_BATCH";
       try {
-        const res = await fetch(`${currentServerUrl}/api/load-batch`, {
+        const res = await fetchWithTimeout(`${currentServerUrl}/api/load-batch`, {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ usernames: keysArray })
+          body: JSON.stringify({ projectId: currentProjectId, usernames: keysArray })
         });
         const json = await res.json();
         if (json.success) {
@@ -316,7 +527,10 @@
         } else {
           currentBatchData = "{}"; dbStatus = "BATCH_FAILED";
         }
-      } catch (e) { currentBatchData = "{}"; dbStatus = "OFFLINE"; }
+      } catch (e) {
+        currentBatchData = "{}";
+        dbStatus = e.name === "AbortError" ? "TIMEOUT" : "OFFLINE";
+      }
     }
 
     getLoadedScore() { return currentLoadedScore; }
