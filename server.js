@@ -22,7 +22,6 @@ const PlayerSchema = new mongoose.Schema({
 });
 const Player = mongoose.model('Player', PlayerSchema);
 
-// Test xem server sống hay chết
 app.get('/ping', (req, res) => {
   res.send("Server Aftercode Render đang chạy ngon lành!");
 });
@@ -55,7 +54,27 @@ app.get('/api/load/:username', async (req, res) => {
   }
 });
 
-// Render sẽ tự cấp cổng qua process.env.PORT
+// 🚀 TÍNH NĂNG MỚI: API Tải dữ liệu hàng loạt (Batch Load)
+app.post('/api/load-batch', async (req, res) => {
+  try {
+    const { usernames } = req.body; // Yêu cầu truyền lên một Array ['Player1', 'Player2']
+    if (!Array.isArray(usernames)) return res.status(400).json({ error: "Yêu cầu mảng usernames" });
+
+    // Tìm tất cả user có trong mảng
+    const players = await Player.find({ username: { $in: usernames } });
+    
+    // Gom dữ liệu thành object { "Player1": { score: ..., saveData: ... } }
+    const result = {};
+    players.forEach(p => {
+      result[p.username] = { score: p.score, saveData: p.saveData };
+    });
+
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server đang chạy trên cổng ${PORT}`);
