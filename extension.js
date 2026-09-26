@@ -4,7 +4,7 @@
   const DB_ICON_URL = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTIxIDEyYzAgMS42Ni00IDMtOSAzcy05LTEuMzQtOS0zIi8+PHBhdGggZD0iTTMgNXY3YzAgMS42NiA0IDMgOSAzczktMS4zNCA5LTMiLz48cGF0aCBkPSJNMjEgNWMwIDEuNjYtNCAzLTkgM3MtOS0xLjM0LTktMyA0LTMgOS0zIDkgMS4zNCA5IDNaIi8+PC9zdmc+";
 
   const DEFAULT_SERVER = "https://aftercode-cloud-engine.onrender.com";
-  let cacheCooldownMs = 2000; // Thay vì hằng số, giờ có thể thay đổi
+  let cacheCooldownMs = 2000;
   const HOVER_DELAY = 450; 
 
   let currentServerUrl = DEFAULT_SERVER;
@@ -12,7 +12,7 @@
   
   let currentLoadedScore = 0;
   let currentLoadedData = "{}";
-  let currentBatchData = "{}"; // Chứa dữ liệu tải hàng loạt
+  let currentBatchData = "{}";
   let dbStatus = "IDLE";
 
   function getLang() {
@@ -30,7 +30,6 @@
     try { JSON.parse(str); return true; } catch (e) { return false; }
   }
 
-  // Tiện ích lấy List của Scratch dựa trên tên
   function getList(util, listName) {
     if (!util || !util.target) return null;
     const stage = util.target.runtime.getTargetForStage();
@@ -39,9 +38,6 @@
     return variable;
   }
 
-  // ==========================================
-  // METADATA CHO TOOLTIP (Cập nhật block mới)
-  // ==========================================
   const BLOCK_META = {
     setServerUrl: { title: { vi: "Cấu hình máy chủ", en: "Set Server URL" }, type: "COMMAND", desc: { vi: "Thiết lập địa chỉ máy chủ API.", en: "Sets the backend API server URL." }, output: null },
     pingServer: { title: { vi: "Kiểm tra kết nối", en: "Ping Server" }, type: "COMMAND", desc: { vi: "Gửi gói tin ping kiểm tra máy chủ.", en: "Sends a ping packet to test server." }, output: { vi: "Cập nhật vào 'trạng thái máy chủ'", en: "Updates 'server status' reporter" } },
@@ -61,7 +57,6 @@
   };
 
   function setupTurboWarpTooltip() {
-      // (Giữ nguyên logic tạo Tooltip như code cũ của bạn)
       if (typeof document === "undefined") return;
       let tooltip = document.getElementById("danv-tw-tooltip");
       if (!tooltip) {
@@ -134,9 +129,6 @@
   }
   setupTurboWarpTooltip();
 
-  // ==========================================
-  // EXTENSION CHÍNH
-  // ==========================================
   class DANVCloudDBExtension {
     getInfo() {
       return {
@@ -156,7 +148,6 @@
             text: msg("DANVworkshop Homepage", "Trang chủ DANVworkshop")
           },
           "---",
-          // ---- NHÓM KẾT NỐI & CACHE ----
           {
             opcode: "setServerUrl", blockType: Scratch.BlockType.COMMAND,
             text: msg("set server url [URL]", "cấu hình máy chủ [URL]"),
@@ -170,7 +161,6 @@
             arguments: { TIME: { type: Scratch.ArgumentType.NUMBER, defaultValue: 2 } }
           },
           "---",
-          // ---- NHÓM DỮ LIỆU ĐÁM MÂY (ĐƠN & ĐỢT) ----
           {
             opcode: "saveDataAndWait", blockType: Scratch.BlockType.COMMAND,
             text: msg("☁ save: user [USER] | score [SCORE] | data [DATA] and wait", "☁ lưu dữ liệu: tài khoản [USER] | điểm [SCORE] | dữ liệu [DATA] và chờ"),
@@ -188,16 +178,13 @@
           { opcode: "getLoadedScore", blockType: Scratch.BlockType.REPORTER, text: msg("☁ loaded score", "☁ điểm vừa tải") },
           { opcode: "getLoadedData", blockType: Scratch.BlockType.REPORTER, text: msg("☁ loaded data", "☁ dữ liệu vừa tải") },
           {
-            // MỚI: Tải dữ liệu theo đợt (Giống Gandi)
             opcode: "loadBatchAndWait", blockType: Scratch.BlockType.COMMAND,
             text: msg("📦 read in batches - keys in array [ARRAY] and wait", "📦 đọc theo đợt - các khóa trong mảng JSON [ARRAY] và chờ"),
             arguments: { ARRAY: { type: Scratch.ArgumentType.STRING, defaultValue: '["Player1", "Player2"]' } }
           },
           { opcode: "getBatchData", blockType: Scratch.BlockType.REPORTER, text: msg("📦 batch data (JSON)", "📦 dữ liệu đợt vừa tải (JSON)") },
           "---",
-          // ---- NHÓM TIỆN ÍCH JSON (NÂNG CẤP) ----
           {
-            // MỚI: Kiểm tra JSON Object/Array
             opcode: "jsonIsValid", blockType: Scratch.BlockType.BOOLEAN,
             text: msg("[JSON] is a valid [TYPE]", "[JSON] là một [TYPE] hợp lệ"),
             arguments: {
@@ -216,7 +203,6 @@
             arguments: { VAL: { type: Scratch.ArgumentType.STRING, defaultValue: "2" }, KEY: { type: Scratch.ArgumentType.STRING, defaultValue: "level" }, JSON: { type: Scratch.ArgumentType.STRING, defaultValue: '{"level":1}' } }
           },
           {
-            // MỚI: Đổ JSON Array vào List Scratch (Giống Gandi)
             opcode: "jsonReplaceList", blockType: Scratch.BlockType.COMMAND,
             text: msg("replace List [LIST] with JSON Array [ARRAY]", "thay thế Danh Sách [LIST] bằng Mảng JSON [ARRAY]"),
             arguments: {
@@ -225,7 +211,6 @@
             }
           },
           {
-            // MỚI: Parse List thành JSON (Giống Gandi)
             opcode: "jsonParseList", blockType: Scratch.BlockType.REPORTER,
             text: msg("parse List [LIST] to JSON array", "chuyển Danh Sách [LIST] thành Mảng JSON"),
             arguments: { LIST: { type: Scratch.ArgumentType.STRING, menu: "projectLists" } }
@@ -305,7 +290,6 @@
       } catch (e) { currentLoadedScore = 0; currentLoadedData = "{}"; dbStatus = "OFFLINE"; }
     }
 
-    // API Đọc theo đợt
     async loadBatchAndWait(args) {
       const now = Date.now();
       if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
@@ -314,7 +298,7 @@
       try {
         keysArray = JSON.parse(args.ARRAY);
         if (!Array.isArray(keysArray)) throw new Error("Not Array");
-        if (keysArray.length > 50) keysArray = keysArray.slice(0, 50); // Max 50 theo ảnh của bạn
+        if (keysArray.length > 50) keysArray = keysArray.slice(0, 50);
       } catch (e) {
         dbStatus = "INVALID_BATCH_ARRAY"; return;
       }
@@ -339,7 +323,6 @@
     getLoadedData() { return currentLoadedData; }
     getBatchData() { return currentBatchData; }
 
-    // Tự động quét và lấy danh sách các List hiện có trong Scratch
     getProjectLists() {
       if (!Scratch || !Scratch.vm || !Scratch.vm.runtime) return [""];
       const lists = new Set();
@@ -350,7 +333,7 @@
             for (const varId in target.variables) {
               const variable = target.variables[varId];
               if (variable.type === 'list') {
-                lists.add(variable.name); // Thu thập tên List
+                lists.add(variable.name);
               }
             }
           }
@@ -360,13 +343,12 @@
       return listArr.length > 0 ? listArr : [""];
     }
 
-    // JSON UTILS
     jsonIsValid(args) {
       try {
         const parsed = JSON.parse(args.JSON);
         if (args.TYPE === 'object') return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
         if (args.TYPE === 'array') return Array.isArray(parsed);
-        return parsed !== null && typeof parsed === 'object'; // 'any'
+        return parsed !== null && typeof parsed === 'object';
       } catch (e) { return false; }
     }
 
@@ -387,22 +369,20 @@
       return JSON.stringify(obj);
     }
 
-    // LIST UTILS (Cần `util` của Scratch để truy cập Data)
     jsonReplaceList(args, util) {
       const listVariable = getList(util, args.LIST);
       if (!listVariable) return;
       try {
         const parsedArray = JSON.parse(args.ARRAY);
         if (Array.isArray(parsedArray)) {
-          listVariable.value = parsedArray; // Đổ thẳng mảng vào Scratch List
+          listVariable.value = parsedArray;
         }
-      } catch (e) { /* Kệ nếu parse lỗi */ }
+      } catch (e) {}
     }
 
     jsonParseList(args, util) {
       const listVariable = getList(util, args.LIST);
       if (!listVariable) return "[]";
-      // Chuyển List thành Array, tự động ép kiểu số nếu có thể
       const arr = listVariable.value.map(item => {
         if (!isNaN(item) && item.toString().trim() !== "") return Number(item);
         if (item === "true") return true;
