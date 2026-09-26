@@ -1,7 +1,7 @@
 (function (Scratch) {
   "use strict";
 
-  const DB_ICON_URL = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTIxIDEyYzAgMS42Ni00IDMtOSAzcy05LTEuMzQtOS0zIi8+PHBhdGggZD0iTTMgNXY3YzAgMS42NiA0IDMgOSAzczktMS4zNCA5LTMiLz48cGF0aCBkPSJNMjEgNWMwIDEuNjYtNCAzLTkgM3MtOS0xLjM0LTktMyA0LTMgOS0zIDkgMS4zNCA5IDNaIi8+PC9zdmc+";
+  const DB_ICON_URL = "https://raw.githubusercontent.com/danvPR/aftercode-cloud-engine/refs/heads/main/icon.png";
 
   const DEFAULT_SERVER = "https://aftercode-cloud-engine.onrender.com";
   let cacheCooldownMs = 2000;
@@ -167,7 +167,7 @@
             ${meta.cooldown ? `<div style="display: flex; gap: 6px; align-items: baseline;"><span style="color: #fbbf24; font-weight: 700; flex-shrink: 0;">⏱ Hồi chiêu:</span><span style="color: #cbd5e1;">${meta.cooldown}</span></div>` : ""}
           </div>`;
         }
-        tooltip.innerHTML = `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px;"><div style="display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px;"><span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #00A877; box-shadow: 0 0 8px #00a877;"></span>${title}</div><span style="font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 999px; ${badgeStyle}">${typeLabel}</span></div><div style="font-size: 11.5px; color: #94a3b8;">${desc}</div>${metaBoxHtml}`;
+        tooltip.innerHTML = `<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px;"><div style="display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px;"><span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #25C478; box-shadow: 0 0 8px #25C478;"></span>${title}</div><span style="font-size: 9.5px; font-weight: 700; padding: 2px 6px; border-radius: 999px; ${badgeStyle}">${typeLabel}</span></div><div style="font-size: 11.5px; color: #94a3b8;">${desc}</div>${metaBoxHtml}`;
       }
       function positionTooltip(x, y) {
         const pad = 14; const width = tooltip.offsetWidth || 285; const height = tooltip.offsetHeight || 130;
@@ -213,7 +213,7 @@
       return {
         id: "danvCloudDB",
         name: msg("DANV Cloud DB", "DANV Cloud DB"),
-        color1: "#00684A", color2: "#004B36", color3: "#001E2B",
+        color1: "#25C478", color2: "#1EA866", color3: "#16804D",
         blockIconURI: DB_ICON_URL, menuIconURI: DB_ICON_URL,
         blocks: [
           {
