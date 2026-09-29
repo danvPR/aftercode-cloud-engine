@@ -13,9 +13,12 @@
     const client = createClient({ publicApiKey: PUBLIC_API_KEY });
 
     let room = null;
+    let currentRoomId = null;
+    let myUserName = localStorage.getItem('collab_username') || ('User_' + Math.floor(1000 + Math.random() * 9000));
     let cursorsContainer = null;
     let cursorElements = new Map();
     let lastMouseTime = 0;
+    let navBarBadgeEl = null;
 
     let sharedBlocks = null; 
     let isApplyingRemote = false; // Chốt an toàn chống vòng lặp mạng (Echo)
@@ -23,11 +26,166 @@
     const incomingTransfers = new Map(); // Bộ đệm chứa các mảnh dữ liệu đang nhận dở
 
     // --- 🛡️ HỆ THỐNG AN TOÀN CHỐNG MẤT DỮ LIỆU & KHÓA COSTUME ---
-    const localBackups = new Map(); // Lưu snapshot dự phòng: spriteKey -> { blocks, comments, time }
-    const spriteVersions = new Map(); // Theo dõi phiên bản: spriteKey -> versionNumber
+    const localBackups = new Map();
+    const spriteVersions = new Map();
     let activeCostumeLockTimeout = null;
-    let liveCostumeSyncInterval = null; // Bộ lặp gửi hình ảnh mỗi 5s
-    let lastSentCostumeDataURI = null; // Tránh gửi trùng lặp nếu chưa vẽ gì mới
+    let liveCostumeSyncInterval = null;
+    let lastSentCostumeDataURI = null;
+
+    // KIỂM TRA CHÍNH XÁC XEM CÓ ĐANG Ở TAB VẼ TRANG PHỤC KHÔNG
+    function isCostumeTabActive() {
+        // Kiểm tra qua tab react-tabs của Scratch/TurboWarp
+        const tabs = document.querySelectorAll('[class*="react-tabs__tab"], [role="tab"]');
+        for (const tab of tabs) {
+            const isSelected = tab.getAttribute('aria-selected') === 'true' || 
+                               tab.classList.contains('react-tabs__tab--selected') ||
+                               tab.className.includes('is-selected');
+            if (isSelected) {
+                const text = (tab.textContent || '').trim().toLowerCase();
+                if (text.includes('costume') || text.includes('trang phục') || text.includes('backdrop') || text.includes('phông nền')) {
+                    return true;
+                }
+            }
+        }
+        const paintEditor = document.querySelector('[class*="paint-editor_paint-editor"]') ||
+                            document.querySelector('[class*="paint-editor_canvas-container"]');
+        return !!(paintEditor && paintEditor.offsetParent !== null && paintEditor.getBoundingClientRect().width > 0);
+    }
+
+    // Hiển thị và cập nhật Badge ID phòng trên Navigation Bar của TurboWarp
+    function updateNavBarBadge(roomId, onlineCount = 1) {
+        if (!roomId) return;
+        const navBar = document.querySelector('[class*="menu-bar_account-info-group"]') ||
+                       document.querySelector('[class*="menu-bar_main-menu"]');
+        if (!navBar) return;
+
+        if (!navBarBadgeEl) {
+            navBarBadgeEl = document.createElement('div');
+            navBarBadgeEl.id = 'collab-navbar-badge';
+            navBar.prepend(navBarBadgeEl);
+        }
+
+        navBarBadgeEl.style.cssText = `
+            display: inline-flex; align-items: center; gap: 8px;
+            background: linear-gradient(135deg, rgba(0, 102, 255, 0.18), rgba(0, 212, 255, 0.12));
+            border: 1px solid rgba(0, 160, 255, 0.45);
+            padding: 5px 12px; border-radius: 20px; color: #ffffff;
+            font-size: 12px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            cursor: pointer; user-select: none; margin: 0 8px;
+            box-shadow: 0 4px 14px rgba(0, 102, 255, 0.2);
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        `;
+        navBarBadgeEl.title = 'Nhấp đúp hoặc bấm vào để sao chép mã phòng!';
+        navBarBadgeEl.innerHTML = `
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#00ff88; box-shadow:0 0 8px #00ff88; animation: pulse-live 1.8s infinite;"></span>
+            <span>Phòng: <strong style="color:#70d6ff; letter-spacing:0.5px;">${roomId}</strong></span>
+            <span style="background:rgba(255,255,255,0.18); padding:2px 7px; border-radius:10px; font-size:11px; color:#e2e8f0;">👥 ${onlineCount}</span>
+        `;
+
+        navBarBadgeEl.onmouseenter = () => { navBarBadgeEl.style.transform = 'translateY(-1px) scale(1.02)'; };
+        navBarBadgeEl.onmouseleave = () => { navBarBadgeEl.style.transform = 'translateY(0) scale(1)'; };
+        navBarBadgeEl.onclick = () => {
+            navigator.clipboard.writeText(roomId).then(() => {
+                showCostumeLock(`📋 Đã sao chép mã phòng "${roomId}" vào bộ nhớ tạm!`);
+                setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2500);
+            });
+        };
+    }
+
+    // CỬA SỔ MODAL HIỆN ĐẠI HỎI ID PHÒNG VÀ TÊN NGƯỜI DÙNG
+    function openCollabJoinModal(defaultRoomId = 'phong-test-1') {
+        return new Promise((resolve) => {
+            const oldModal = document.getElementById('collab-modal-overlay');
+            if (oldModal) oldModal.remove();
+
+            const overlay = document.createElement('div');
+            overlay.id = 'collab-modal-overlay';
+            overlay.style.cssText = `
+                position: fixed; inset: 0; background: rgba(8, 10, 18, 0.75);
+                backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                z-index: 10000001; display: flex; align-items: center; justify-content: center;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                animation: collabFadeIn 0.25s ease-out;
+            `;
+
+            overlay.innerHTML = `
+                <div style="
+                    background: linear-gradient(160deg, #181926 0%, #10121d 100%);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px; width: 380px; padding: 26px;
+                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 102, 255, 0.15);
+                    color: #fff; position: relative;
+                ">
+                    <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 20px;">
+                        <div style="width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #0066ff, #00e5ff); display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 4px 12px rgba(0,102,255,0.4);">
+                            ⚡
+                        </div>
+                        <div>
+                            <div style="font-size: 17px; font-weight: 700; color: #f8fafc;">Live Collab Pro</div>
+                            <div style="font-size: 12px; color: #94a3b8;">Đồng bộ lập trình & vẽ thời gian thực</div>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 16px;">
+                        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Tên hiển thị của bạn</label>
+                        <input id="collab-input-name" type="text" value="${myUserName}" placeholder="Nhập tên..." style="
+                            width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06);
+                            border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 10px 14px;
+                            color: #fff; font-size: 14px; outline: none; transition: border-color 0.2s;
+                        " />
+                    </div>
+
+                    <div style="margin-bottom: 24px;">
+                        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Mã phòng (Room ID)</label>
+                        <input id="collab-input-room" type="text" value="${defaultRoomId}" placeholder="Ví dụ: phong-chinh-1" style="
+                            width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06);
+                            border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 10px 14px;
+                            color: #70d6ff; font-weight: 600; font-size: 14px; outline: none; transition: border-color 0.2s;
+                        " />
+                    </div>
+
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button id="collab-btn-cancel" style="
+                            background: rgba(255,255,255,0.08); border: none; padding: 10px 18px; border-radius: 10px;
+                            color: #cbd5e1; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+                        ">Hủy</button>
+                        <button id="collab-btn-confirm" style="
+                            background: linear-gradient(135deg, #0066ff, #00aaff); border: none; padding: 10px 22px; border-radius: 10px;
+                            color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 15px rgba(0, 102, 255, 0.4);
+                            transition: transform 0.15s, opacity 0.2s;
+                        ">Kết nối ngay</button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(overlay);
+
+            const inputName = overlay.querySelector('#collab-input-name');
+            const inputRoom = overlay.querySelector('#collab-input-room');
+
+            [inputName, inputRoom].forEach(inp => {
+                inp.onfocus = () => { inp.style.borderColor = '#0088ff'; };
+                inp.onblur = () => { inp.style.borderColor = 'rgba(255,255,255,0.15)'; };
+            });
+
+            overlay.querySelector('#collab-btn-cancel').onclick = () => {
+                overlay.remove();
+                resolve(null);
+            };
+
+            const confirmAction = () => {
+                const nameVal = inputName.value.trim() || myUserName;
+                const roomVal = inputRoom.value.trim() || defaultRoomId;
+                myUserName = nameVal;
+                localStorage.setItem('collab_username', nameVal);
+                overlay.remove();
+                resolve({ roomId: roomVal, userName: nameVal });
+            };
+
+            overlay.querySelector('#collab-btn-confirm').onclick = confirmAction;
+            inputRoom.onkeydown = (e) => { if (e.key === 'Enter') confirmAction(); };
+        });
+    }
 
     // Kiểm tra xem trang phục có đang bị người khác khóa chỉnh sửa hay không
     function getOtherCostumeEditor(spriteKey, costumeIndex) {
@@ -36,7 +194,6 @@
         const now = Date.now();
         for (const user of others) {
             const lock = user.presence?.editingCostume;
-            // Khóa hợp lệ nếu còn hạn dưới 10 giây
             if (lock && lock.spriteKey === spriteKey && (now - lock.timestamp < 10000)) {
                 if (lock.costumeIndex === undefined || lock.costumeIndex === costumeIndex) {
                     return {
@@ -60,7 +217,6 @@
             }
         });
 
-        // Kích hoạt bộ đếm tự động gửi hình ảnh mỗi 5 giây cho người khác
         if (!liveCostumeSyncInterval) {
             liveCostumeSyncInterval = setInterval(() => {
                 sendLiveCostumeSync();
@@ -68,7 +224,6 @@
         }
 
         if (activeCostumeLockTimeout) clearTimeout(activeCostumeLockTimeout);
-        // Tự động nhả khóa nếu không còn thao tác vẽ trong 8 giây
         activeCostumeLockTimeout = setTimeout(() => {
             releaseCostumeLock();
         }, 8000);
@@ -113,14 +268,19 @@
         }
     }
 
-    // TẤM MÀN CHẮN CHẶN CỨNG B KHÔNG CHO BẤM CHUỘT / VẼ VÀO PAINT EDITOR
+    // TẤM MÀN CHẮN PAINT EDITOR HIỆN ĐẠI (TỰ ĐỘNG BIẾN MẤT KHI THOÁT KHỎI TAB COSTUME)
     let paintCurtainEl = null;
     function updateDOMCostumeCurtain(isLocked, editorName) {
-        // Chỉ chọn chính xác khung vẽ Paint Editor, TUYỆT ĐỐI không lấy nhầm sang Code workspace
+        // [QUAN TRỌNG NHẤT]: Nếu người dùng KHÔNG ở tab costume, ẩn ngay lập tức!
+        if (!isLocked || !isCostumeTabActive()) {
+            if (paintCurtainEl) paintCurtainEl.style.display = 'none';
+            return;
+        }
+
         const paintEditor = document.querySelector('[class*="paint-editor_paint-editor"]') 
                          || document.querySelector('[class*="paint-editor_canvas-container"]');
 
-        if (!isLocked || !paintEditor || paintEditor.offsetParent === null) {
+        if (!paintEditor || paintEditor.offsetParent === null) {
             if (paintCurtainEl) paintCurtainEl.style.display = 'none';
             return;
         }
@@ -143,8 +303,9 @@
             left: ${rect.left}px;
             width: ${rect.width}px;
             height: ${rect.height}px;
-            background: rgba(15, 23, 42, 0.65);
-            backdrop-filter: blur(2px);
+            background: rgba(10, 14, 26, 0.78);
+            backdrop-filter: blur(5px);
+            -webkit-backdrop-filter: blur(5px);
             z-index: 99999;
             display: flex;
             flex-direction: column;
@@ -154,19 +315,29 @@
             cursor: not-allowed;
             pointer-events: all;
             user-select: none;
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            transition: opacity 0.2s ease;
         `;
 
         paintCurtainEl.innerHTML = `
-            <div style="background: rgba(18, 18, 24, 0.95); padding: 16px 24px; border-radius: 12px; border: 2px solid #ff3344; box-shadow: 0 10px 30px rgba(0,0,0,0.6); text-align: center; pointer-events: none;">
-                <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">🔒 ĐANG BỊ KHÓA VẼ</div>
-                <div style="font-size: 14px; color: #ff9999;">${editorName} đang chỉnh sửa trang phục này!</div>
-                <div style="font-size: 12px; color: #88ccff; margin-top: 6px;">⏳ Bản vẽ sẽ tự động cập nhật ngay lập tức...</div>
+            <div style="
+                background: linear-gradient(145deg, rgba(28, 30, 44, 0.95), rgba(18, 20, 32, 0.95));
+                padding: 24px 32px; border-radius: 16px;
+                border: 1px solid rgba(255, 77, 77, 0.45);
+                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 25px rgba(255, 51, 68, 0.2);
+                text-align: center; pointer-events: none; max-width: 320px;
+            ">
+                <div style="font-size: 32px; margin-bottom: 8px; filter: drop-shadow(0 2px 8px rgba(255,50,50,0.5));">🔒</div>
+                <div style="font-size: 16px; font-weight: 700; color: #ff5252; letter-spacing: 0.5px; margin-bottom: 6px;">KHU VỰC VẼ ĐANG BỊ KHÓA</div>
+                <div style="font-size: 13px; color: #f1f5f9; line-height: 1.4;"><strong style="color:#70d6ff;">${editorName}</strong> đang trực tiếp chỉnh sửa trang phục này!</div>
+                <div style="font-size: 11.5px; color: #94a3b8; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+                    ⚡ Nét vẽ sẽ tự động cập nhật thời gian thực...
+                </div>
             </div>
         `;
     }
 
-    // Giao diện thông báo nhỏ góc màn hình
+    // THÔNG BÁO TOAST GÓC MÀN HÌNH NÂNG CẤP GIAO DIỆN
     let lockOverlay = null;
     function showCostumeLock(message) {
         if (!lockOverlay) {
@@ -174,15 +345,18 @@
             lockOverlay.id = 'collab-costume-lock-banner';
             lockOverlay.style.cssText = `
                 position: fixed; bottom: 24px; right: 24px;
-                background: rgba(20, 20, 28, 0.95); color: #fff;
-                padding: 12px 18px; border-radius: 8px; font-family: sans-serif;
-                box-shadow: 0 6px 20px rgba(0,0,0,0.4); z-index: 1000000;
-                display: flex; align-items: center; gap: 10px; border-left: 4px solid #0055ff;
-                font-size: 13px; pointer-events: none; transition: opacity 0.25s, transform 0.25s;
+                background: linear-gradient(135deg, rgba(16, 20, 34, 0.95), rgba(12, 14, 24, 0.95));
+                color: #f8fafc; padding: 12px 20px; border-radius: 12px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 1px 1px rgba(255,255,255,0.1);
+                z-index: 1000000; display: flex; align-items: center; gap: 12px;
+                border-left: 4px solid #0077ff; font-size: 13px; font-weight: 500;
+                pointer-events: none; transition: opacity 0.25s, transform 0.25s;
+                backdrop-filter: blur(6px);
             `;
             document.body.appendChild(lockOverlay);
         }
-        lockOverlay.innerHTML = `<span style="display:inline-block; font-size:16px;">⏳</span> <span>${message}</span>`;
+        lockOverlay.innerHTML = `<span style="font-size:16px;">⏳</span> <span>${message}</span>`;
         lockOverlay.style.opacity = '1';
         lockOverlay.style.transform = 'translateY(0)';
     }
@@ -190,18 +364,17 @@
     function hideCostumeLock() {
         if (lockOverlay) {
             lockOverlay.style.opacity = '0';
-            lockOverlay.style.transform = 'translateY(10px)';
+            lockOverlay.style.transform = 'translateY(12px)';
         }
     }
 
-    // Bắt sự kiện người dùng click vào khu vực vẽ để chiếm quyền hoặc chặn nếu bị khóa
+    // LẮNG NGHE CHUYỂN TAB & CLICK CHUỘT ĐỂ XÓA MÀN KHÓA TỨC THÌ
     function setupCostumeInteractionListeners() {
         const handleInteraction = (e) => {
             if (!room || isApplyingRemote) return;
             const target = Scratch.vm.editingTarget;
             if (!target) return;
 
-            // Kiểm tra click có nằm trong tab trang phục hay Paint Editor không
             const inPaintArea = e.target.closest && (
                 e.target.closest('[class*="paint-editor_"]') || 
                 e.target.closest('[class*="asset-panel_"]')
@@ -213,19 +386,27 @@
 
             const otherEditor = getOtherCostumeEditor(syncKey, costumeIndex);
             if (otherEditor) {
-                // Người khác đang vẽ: Chặn ngay lập tức
                 e.stopPropagation();
                 e.preventDefault();
                 updateDOMCostumeCurtain(true, otherEditor.userName);
                 return;
             }
 
-            // Nếu chưa ai vẽ: Chiếm quyền khóa và tự động kích hoạt gửi mỗi 5s
             acquireCostumeLock(syncKey, costumeIndex);
         };
 
         window.addEventListener('pointerdown', handleInteraction, true);
         window.addEventListener('keydown', handleInteraction, true);
+
+        // Lắng nghe click toàn trang: Nếu bấm sang tab Code/Sounds, dập tắt màn che và thông báo spectate ngay
+        document.addEventListener('click', () => {
+            setTimeout(() => {
+                if (!isCostumeTabActive()) {
+                    if (paintCurtainEl) paintCurtainEl.style.display = 'none';
+                    if (!isCostumeLocked) hideCostumeLock();
+                }
+            }, 60);
+        }, true);
     }
 
     // Hàm chia nhỏ dữ liệu và truyền dần dần (Chunking Sender)
@@ -826,28 +1007,61 @@
                 color1: '#0055ff', color2: '#0044cc',
                 blocks: [
                     {
+                        opcode: 'openModalBlock',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: '✨ Mở bảng kết nối phòng Collab'
+                    },
+                    {
                         opcode: 'connectRoom',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: 'Vào phòng chung [ROOM_ID]',
-                        arguments: { ROOM_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'phong-test-1' } }
+                        text: 'Vào phòng chung [ROOM_ID] với tên [NAME]',
+                        arguments: {
+                            ROOM_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'phong-test-1' },
+                            NAME: { type: Scratch.ArgumentType.STRING, defaultValue: myUserName }
+                        }
                     }
                 ]
             };
         }
 
-        connectRoom(args) {
-            const roomId = args.ROOM_ID;
-            if (room) return;
+        async openModalBlock() {
+            if (room) {
+                alert(`Bạn đã ở trong phòng "${currentRoomId}" rồi!`);
+                return;
+            }
+            const modalResult = await openCollabJoinModal('phong-test-1');
+            if (modalResult) {
+                this.startRoomConnection(modalResult.roomId, modalResult.userName);
+            }
+        }
 
-            console.log(`[Collab 🚀] Kết nối phòng: ${roomId}...`);
+        connectRoom(args) {
+            const roomId = args.ROOM_ID || 'phong-test-1';
+            const name = args.NAME || myUserName;
+            this.startRoomConnection(roomId, name);
+        }
+
+        startRoomConnection(roomId, userName) {
+            if (room) return;
+            currentRoomId = roomId;
+            myUserName = userName;
+
+            console.log(`[Collab 🚀] Đang kết nối phòng: ${roomId} với tên: ${userName}...`);
             setupDOM();
             setupVMHooks();
             setupSpriteHooks();
             setupCostumeInteractionListeners();
 
+            // Hiển thị badge phòng ban đầu trên nav bar
+            updateNavBarBadge(roomId, 1);
+
             try {
                 const response = client.enterRoom(roomId, {
-                    initialPresence: { cursor: null, editingCostume: null },
+                    initialPresence: { 
+                        cursor: null, 
+                        editingCostume: null,
+                        name: myUserName 
+                    },
                     initialStorage: { sharedBlocks: new LiveMap() }
                 });
                 
@@ -855,7 +1069,7 @@
 
                 document.addEventListener('mousemove', (e) => {
                     if (Date.now() - lastMouseTime > 50) {
-                        room.updatePresence({ cursor: { x: e.clientX, y: e.clientY } });
+                        room.updatePresence({ cursor: { x: e.clientX, y: e.clientY }, name: myUserName });
                         lastMouseTime = Date.now();
                     }
                 });
@@ -865,6 +1079,9 @@
                     const activeIds = new Set();
                     let someoneEditingCurrentCostume = false;
                     let currentEditorName = "Người dùng khác";
+
+                    // Cập nhật số người online theo thời gian thực lên Nav Bar
+                    updateNavBarBadge(currentRoomId, others.length + 1);
 
                     const currentEditingTarget = Scratch.vm.editingTarget;
                     const currentSyncKey = currentEditingTarget ? getSyncKey(currentEditingTarget) : null;
@@ -886,7 +1103,7 @@
                             el.style.left = p.cursor.x + 'px'; el.style.top = p.cursor.y + 'px';
                         }
 
-                        // KIỂM TRA XEM CÓ AI ĐANG SỬA TRANG PHỤC NÀY KHÔNG (Có hạn trong vòng 10 giây)
+                        // KIỂM TRA XEM CÓ AI ĐANG SỬA TRANG PHỤC NÀY KHÔNG
                         if (p && p.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
                             if (currentSyncKey && p.editingCostume.spriteKey === currentSyncKey) {
                                 if (p.editingCostume.costumeIndex === undefined || p.editingCostume.costumeIndex === currentCostumeIdx) {
@@ -897,13 +1114,18 @@
                         }
                     });
 
-                    // CẬP NHẬT MÀN CHẮN KHÓA DOM TRÊN GIAO DIỆN CỦA B
-                    updateDOMCostumeCurtain(someoneEditingCurrentCostume, currentEditorName);
-
-                    if (someoneEditingCurrentCostume) {
-                        showCostumeLock(`👁️ Đang xem trực tiếp: ${currentEditorName} đang vẽ trang phục này!`);
-                    } else if (!isCostumeLocked) {
-                        hideCostumeLock();
+                    // [ĐÃ SỬA DỨT ĐIỂM]: Chỉ kích hoạt màn chắn nếu ĐANG THỰC SỰ MỞ TAB COSTUME
+                    if (isCostumeTabActive()) {
+                        updateDOMCostumeCurtain(someoneEditingCurrentCostume, currentEditorName);
+                        if (someoneEditingCurrentCostume) {
+                            showCostumeLock(`👁️ Đang xem trực tiếp: ${currentEditorName} đang vẽ trang phục này!`);
+                        } else if (!isCostumeLocked) {
+                            hideCostumeLock();
+                        }
+                    } else {
+                        // Nếu đã thoát tab costume: Ẩn dứt điểm màn che và thông báo
+                        if (paintCurtainEl) paintCurtainEl.style.display = 'none';
+                        if (!isCostumeLocked) hideCostumeLock();
                     }
 
                     for (const [id, el] of cursorElements) {
