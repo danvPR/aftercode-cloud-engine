@@ -132,7 +132,7 @@
         };
     }
 
-    // --- HACK VÀO KHỐI LỆNH & SỰ KIỆN CHUYỂN SPRITE ---
+    // --- HACK VÀO KHỐI LỆNH, CHUYỂN SPRITE, TẠO/XÓA SPRITE VÀ EXTENSION ---
     function setupVMHooks() {
         const stage = Scratch.vm.runtime.targets[0];
         const blockContainerProto = Object.getPrototypeOf(stage.blocks);
@@ -148,18 +148,16 @@
                 for (const t of Scratch.vm.runtime.targets) {
                     if (t.blocks === this) { target = t; break; }
                 }
-
                 if (target) {
                     const syncKey = getSyncKey(target);
                     const blocksString = JSON.stringify(this._blocks);
-                    
                     if (sharedBlocks) sharedBlocks.set(syncKey, blocksString);
                     room.broadcastEvent({ type: 'INSTANT_BLOCK_SYNC', spriteKey: syncKey, blockData: blocksString });
                 }
             }
         };
 
-        // HACK: Tự động kéo code từ mạng về mỗi khi bấm chọn một Sprite bất kỳ
+        // 1. Tự động kéo code về khi chuyển Sprite
         const originalSetEditingTarget = Scratch.vm.setEditingTarget;
         Scratch.vm.setEditingTarget = function(targetId) {
             originalSetEditingTarget.call(this, targetId);
@@ -176,6 +174,83 @@
                 }
             }
         };
+
+        // 2. Bắt sự kiện TẠO Sprite mới (A tạo thì B tự tạo)
+        const originalAddSprite = Scratch.vm.addSprite;
+        Scratch.vm.addSprite = async function(input) {
+            const isLocal = !isApplyingRemote;
+            const result = await originalAddSprite.call(this, input);
+            if (isLocal && room) {
+                const newTarget = Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
+                if (newTarget && !newTarget.isStage) {
+                    try {
+                        const targetJSON = newTarget.toJSON();
+                        targetJSON.blocks = {}; // Chừa blocks lại để đồng bộ riêng
+                        room.broadcastEvent({ 
+                            type: 'SYNC_NEW_SPRITE', 
+                            spriteKey: getSyncKey(newTarget), 
+                            spriteJSON: JSON.stringify(targetJSON) 
+                        });
+                    } catch (err) {
+                        console.error("[Collab] Lỗi đồng bộ tạo sprite:", err);
+                    }
+                }
+            }
+            return result;
+        };
+
+        // 3. Bắt sự kiện NHÂN BẢN Sprite
+        const originalDuplicateSprite = Scratch.vm.duplicateSprite;
+        Scratch.vm.duplicateSprite = async function(targetId) {
+            const isLocal = !isApplyingRemote;
+            const result = await originalDuplicateSprite.call(this, targetId);
+            if (isLocal && room) {
+                const newTarget = Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
+                if (newTarget && !newTarget.isStage) {
+                    try {
+                        const targetJSON = newTarget.toJSON();
+                        targetJSON.blocks = {};
+                        room.broadcastEvent({ 
+                            type: 'SYNC_NEW_SPRITE', 
+                            spriteKey: getSyncKey(newTarget), 
+                            spriteJSON: JSON.stringify(targetJSON) 
+                        });
+                    } catch (err) {
+                        console.error("[Collab] Lỗi đồng bộ nhân bản sprite:", err);
+                    }
+                }
+            }
+            return result;
+        };
+
+        // 4. Bắt sự kiện XÓA Sprite
+        const originalDeleteSprite = Scratch.vm.deleteSprite;
+        Scratch.vm.deleteSprite = function(targetId) {
+            const target = Scratch.vm.runtime.getTargetById(targetId);
+            const syncKey = target ? getSyncKey(target) : null;
+            const isLocal = !isApplyingRemote;
+            
+            const result = originalDeleteSprite.call(this, targetId);
+            if (isLocal && room && syncKey) {
+                room.broadcastEvent({ type: 'SYNC_DELETE_SPRITE', spriteKey: syncKey });
+                if (sharedBlocks) sharedBlocks.delete(syncKey);
+            }
+            return result;
+        };
+
+        // 5. Bắt sự kiện tải Custom Extension (Sửa lỗi khối lệnh đỏ)
+        const em = Scratch.vm.extensionManager;
+        if (em && em.loadExtensionURL) {
+            const originalLoadExt = em.loadExtensionURL;
+            em.loadExtensionURL = async function(url) {
+                const isLocal = !isApplyingRemote;
+                const result = await originalLoadExt.call(this, url);
+                if (isLocal && room) {
+                    room.broadcastEvent({ type: 'SYNC_EXTENSION', url: url });
+                }
+                return result;
+            };
+        }
     }
 
     class LiveblocksCollab {
@@ -278,29 +353,74 @@
                                 if (event.prop === 'size') target.setSize(event.value);
                                 if (event.prop === 'direction') target.setDirection(event.value);
                                 if (event.prop === 'costume') target.setCostume(event.value);
-                                
-                                // Bắt buộc giao diện (Bảng thông số dưới sân khấu) vẽ lại để thấy sự thay đổi
                                 Scratch.vm.emitTargetsUpdate();
                             } finally {
                                 setTimeout(() => { isApplyingRemote = false; }, 40);
                             }
                         }
                     }
+
+                    // 4. NHẬN TẠO / NHÂN BẢN SPRITE MỚI
+                    if (event.type === 'SYNC_NEW_SPRITE') {
+                        const existing = getTargetBySyncKey(event.spriteKey);
+                        if (!existing) {
+                            isApplyingRemote = true;
+                            console.log(`[Collab 🐣] Mạng: Thêm sprite mới ${event.spriteKey}`);
+                            Scratch.vm.addSprite(event.spriteJSON).then(() => {
+                                isApplyingRemote = false;
+                                Scratch.vm.emitWorkspaceUpdate();
+                                Scratch.vm.emitTargetsUpdate();
+                            }).catch(err => {
+                                console.error("[Collab ❌] Lỗi tạo sprite từ mạng:", err);
+                                isApplyingRemote = false;
+                            });
+                        }
+                    }
+
+                    // 5. NHẬN XÓA SPRITE
+                    if (event.type === 'SYNC_DELETE_SPRITE') {
+                        const target = getTargetBySyncKey(event.spriteKey);
+                        if (target) {
+                            isApplyingRemote = true;
+                            console.log(`[Collab 💀] Mạng: Xóa sprite ${event.spriteKey}`);
+                            Scratch.vm.deleteSprite(target.id);
+                            setTimeout(() => { isApplyingRemote = false; }, 50);
+                        }
+                    }
+
+                    // 6. NHẬN YÊU CẦU TẢI EXTENSION (Sửa lỗi khối lệnh đỏ)
+                    if (event.type === 'SYNC_EXTENSION' && Scratch.vm.extensionManager && Scratch.vm.extensionManager.loadExtensionURL) {
+                        isApplyingRemote = true;
+                        console.log(`[Collab 🧩] Mạng: Tải extension ${event.url}`);
+                        Scratch.vm.extensionManager.loadExtensionURL(event.url).then(() => {
+                            isApplyingRemote = false;
+                            Scratch.vm.emitWorkspaceUpdate();
+                        }).catch(() => {
+                            isApplyingRemote = false;
+                        });
+                    }
                 });
 
                 room.getStorage().then((storage) => {
                     sharedBlocks = storage.root.get("sharedBlocks");
                     
-                    // SỬA LỖI: Đồng bộ code cho TẤT CẢ các sprite đang có trong dự án thay vì chỉ 1 cái
                     for (const target of Scratch.vm.runtime.targets) {
                         const cloudStr = sharedBlocks.get(getSyncKey(target));
                         if (cloudStr) {
                             applyBlocksToTarget(target, JSON.parse(cloudStr));
                         }
                     }
-                    Scratch.vm.emitWorkspaceUpdate(); // Cập nhật lại giao diện
+                    Scratch.vm.emitWorkspaceUpdate(); 
                     
-                    console.log("[Collab ✅] SẴN SÀNG! ĐÃ TÍCH HỢP ĐỒNG BỘ TRANG PHỤC VÀ SÂN KHẤU!");
+                    // Tự động gửi tất cả Custom Extension đang có cho người khác tải theo (chống khối đỏ)
+                    if (Scratch.vm.extensionManager && Scratch.vm.extensionManager.getExtensionURLs) {
+                        const urls = Object.values(Scratch.vm.extensionManager.getExtensionURLs());
+                        urls.forEach(url => {
+                            room.broadcastEvent({ type: 'SYNC_EXTENSION', url: url });
+                        });
+                    }
+
+                    console.log("[Collab ✅] SẴN SÀNG! ĐÃ TÍCH HỢP TẠO/XÓA SPRITE VÀ ĐỒNG BỘ EXTENSION!");
                 });
                 
             } catch (err) {
