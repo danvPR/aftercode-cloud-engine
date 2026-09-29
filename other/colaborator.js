@@ -1224,9 +1224,9 @@
         getInfo() {
             return {
                 id: 'liveblockscollab',
-                name: 'DANV Collab',
+                name: 'Collaborative Coding',
                 menuIconURI: DANV_LOGO_URL,
-                blockIconURI: DANV_LOGO_URL,
+                blockIconURI: 'https://github.com/danvPR/aftercode-cloud-engine/blob/main/other/colab-icon.png?raw=true',
                 color1: '#4C97FF',
                 color2: '#3373CC',
                 color3: '#285bab',
