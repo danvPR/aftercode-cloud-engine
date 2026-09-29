@@ -21,20 +21,36 @@
     let navBarBadgeEl = null;
 
     let sharedBlocks = null; 
-    let isApplyingRemote = false; // Chốt an toàn chống vòng lặp mạng (Echo)
-    let isCostumeLocked = false;  // Khóa chống chỉnh sửa khi người khác đang truyền chunk
-    const incomingTransfers = new Map(); // Bộ đệm chứa các mảnh dữ liệu đang nhận dở
+    let isApplyingRemote = false;
+    let isCostumeLocked = false;
+    const incomingTransfers = new Map();
 
-    // --- 🛡️ HỆ THỐNG AN TOÀN CHỐNG MẤT DỮ LIỆU & KHÓA COSTUME ---
+    // --- HỆ THỐNG AN TOÀN CHỐNG MẤT DỮ LIỆU & KHÓA COSTUME ---
     const localBackups = new Map();
     const spriteVersions = new Map();
     let activeCostumeLockTimeout = null;
     let liveCostumeSyncInterval = null;
     let lastSentCostumeDataURI = null;
 
+    // --- HỆ THỐNG CHAT & GIAO DIỆN TURBOWARP ---
+    let chatDrawerEl = null;
+    let chatToggleBtnEl = null;
+    let chatMessages = [];
+    let isChatOpen = false;
+    let unreadCount = 0;
+
+    // BỘ ICON SVG VECTOR CHUẨN TURBOWARP (KHÔNG DÙNG EMOJI)
+    const ICONS = {
+        users: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`,
+        exit: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>`,
+        chat: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`,
+        send: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`,
+        lock: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ff4d4f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`,
+        close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`
+    };
+
     // KIỂM TRA CHÍNH XÁC XEM CÓ ĐANG Ở TAB VẼ TRANG PHỤC KHÔNG
     function isCostumeTabActive() {
-        // Kiểm tra qua tab react-tabs của Scratch/TurboWarp
         const tabs = document.querySelectorAll('[class*="react-tabs__tab"], [role="tab"]');
         for (const tab of tabs) {
             const isSelected = tab.getAttribute('aria-selected') === 'true' || 
@@ -52,7 +68,7 @@
         return !!(paintEditor && paintEditor.offsetParent !== null && paintEditor.getBoundingClientRect().width > 0);
     }
 
-    // Hiển thị và cập nhật Badge ID phòng trên Navigation Bar của TurboWarp
+    // THANH TRẠNG THÁI TRÊN NAVIGATION BAR (PHONG CÁCH TURBOWARP ĐỒNG BỘ)
     function updateNavBarBadge(roomId, onlineCount = 1) {
         if (!roomId) return;
         const navBar = document.querySelector('[class*="menu-bar_account-info-group"]') ||
@@ -67,32 +83,55 @@
 
         navBarBadgeEl.style.cssText = `
             display: inline-flex; align-items: center; gap: 8px;
-            background: linear-gradient(135deg, rgba(0, 102, 255, 0.18), rgba(0, 212, 255, 0.12));
-            border: 1px solid rgba(0, 160, 255, 0.45);
-            padding: 5px 12px; border-radius: 20px; color: #ffffff;
-            font-size: 12px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            cursor: pointer; user-select: none; margin: 0 8px;
-            box-shadow: 0 4px 14px rgba(0, 102, 255, 0.2);
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        `;
-        navBarBadgeEl.title = 'Nhấp đúp hoặc bấm vào để sao chép mã phòng!';
-        navBarBadgeEl.innerHTML = `
-            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#00ff88; box-shadow:0 0 8px #00ff88; animation: pulse-live 1.8s infinite;"></span>
-            <span>Phòng: <strong style="color:#70d6ff; letter-spacing:0.5px;">${roomId}</strong></span>
-            <span style="background:rgba(255,255,255,0.18); padding:2px 7px; border-radius:10px; font-size:11px; color:#e2e8f0;">👥 ${onlineCount}</span>
+            background: hsla(215, 100%, 65%, 0.15);
+            border: 1px solid hsla(215, 100%, 65%, 0.35);
+            padding: 4px 10px; border-radius: 6px; color: #ffffff;
+            font-size: 12px; font-weight: 500; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            user-select: none; margin: 0 6px;
         `;
 
-        navBarBadgeEl.onmouseenter = () => { navBarBadgeEl.style.transform = 'translateY(-1px) scale(1.02)'; };
-        navBarBadgeEl.onmouseleave = () => { navBarBadgeEl.style.transform = 'translateY(0) scale(1)'; };
-        navBarBadgeEl.onclick = () => {
-            navigator.clipboard.writeText(roomId).then(() => {
-                showCostumeLock(`📋 Đã sao chép mã phòng "${roomId}" vào bộ nhớ tạm!`);
-                setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2500);
-            });
-        };
+        navBarBadgeEl.innerHTML = `
+            <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#2fd67c;"></span>
+            <span id="collab-badge-copy" title="Bấm để sao chép mã phòng" style="cursor:pointer; display:flex; align-items:center; gap:4px;">
+                Phòng: <strong style="color:#4C97FF;">${roomId}</strong>
+            </span>
+            <span style="display:inline-flex; align-items:center; gap:3px; background:rgba(0,0,0,0.25); padding:2px 6px; border-radius:4px; font-size:11px;">
+                ${ICONS.users} ${onlineCount}
+            </span>
+            <button id="collab-badge-chat-btn" title="Mở bảng trò chuyện" style="
+                background: rgba(76, 151, 255, 0.2); border: none; border-radius: 4px; padding: 3px 6px;
+                cursor: pointer; color: #fff; display: flex; align-items: center; justify-content: center;
+            ">${ICONS.chat}</button>
+            <button id="collab-badge-leave-btn" title="Thoát phòng" style="
+                background: rgba(255, 77, 79, 0.2); border: none; border-radius: 4px; padding: 3px 6px;
+                cursor: pointer; color: #ff7875; display: flex; align-items: center; justify-content: center;
+            ">${ICONS.exit}</button>
+        `;
+
+        const copyBtn = navBarBadgeEl.querySelector('#collab-badge-copy');
+        if (copyBtn) {
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(roomId).then(() => {
+                    showCostumeLock(`Đã sao chép mã phòng "${roomId}"`);
+                    setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2000);
+                });
+            };
+        }
+
+        const chatBtn = navBarBadgeEl.querySelector('#collab-badge-chat-btn');
+        if (chatBtn) chatBtn.onclick = () => toggleChatUI();
+
+        const leaveBtn = navBarBadgeEl.querySelector('#collab-badge-leave-btn');
+        if (leaveBtn) {
+            leaveBtn.onclick = () => {
+                if (confirm('Bạn có chắc muốn thoát khỏi phòng cộng tác này?')) {
+                    leaveCollabRoom();
+                }
+            };
+        }
     }
 
-    // CỬA SỔ MODAL HIỆN ĐẠI HỎI ID PHÒNG VÀ TÊN NGƯỜI DÙNG
+    // MODAL HỎI ID PHÒNG (GIAO DIỆN TURBOWARP CHUẨN MỰC)
     function openCollabJoinModal(defaultRoomId = 'phong-test-1') {
         return new Promise((resolve) => {
             const oldModal = document.getElementById('collab-modal-overlay');
@@ -101,59 +140,49 @@
             const overlay = document.createElement('div');
             overlay.id = 'collab-modal-overlay';
             overlay.style.cssText = `
-                position: fixed; inset: 0; background: rgba(8, 10, 18, 0.75);
-                backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+                position: fixed; inset: 0; background: rgba(0, 0, 0, 0.65);
                 z-index: 10000001; display: flex; align-items: center; justify-content: center;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                animation: collabFadeIn 0.25s ease-out;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
             `;
 
             overlay.innerHTML = `
                 <div style="
-                    background: linear-gradient(160deg, #181926 0%, #10121d 100%);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 18px; width: 380px; padding: 26px;
-                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 102, 255, 0.15);
-                    color: #fff; position: relative;
+                    background: #252839; border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 8px; width: 360px; padding: 22px;
+                    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4); color: #fff;
                 ">
-                    <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 20px;">
-                        <div style="width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(135deg, #0066ff, #00e5ff); display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 4px 12px rgba(0,102,255,0.4);">
-                            ⚡
-                        </div>
-                        <div>
-                            <div style="font-size: 17px; font-weight: 700; color: #f8fafc;">Live Collab Pro</div>
-                            <div style="font-size: 12px; color: #94a3b8;">Đồng bộ lập trình & vẽ thời gian thực</div>
-                        </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
+                        <span style="font-size: 15px; font-weight: 600; color: #fff;">Kết nối phòng cộng tác</span>
+                        <div id="collab-modal-close" style="cursor:pointer; color:#858ca0;">${ICONS.close}</div>
                     </div>
 
-                    <div style="margin-bottom: 16px;">
-                        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Tên hiển thị của bạn</label>
+                    <div style="margin-bottom: 14px;">
+                        <label style="display: block; font-size: 12px; color: #b8bfd3; margin-bottom: 5px;">Tên hiển thị</label>
                         <input id="collab-input-name" type="text" value="${myUserName}" placeholder="Nhập tên..." style="
-                            width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06);
-                            border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 10px 14px;
-                            color: #fff; font-size: 14px; outline: none; transition: border-color 0.2s;
+                            width: 100%; box-sizing: border-box; background: #1b1d28;
+                            border: 1px solid rgba(255,255,255,0.2); border-radius: 5px; padding: 8px 12px;
+                            color: #fff; font-size: 13px; outline: none;
                         " />
                     </div>
 
-                    <div style="margin-bottom: 24px;">
-                        <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 6px;">Mã phòng (Room ID)</label>
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; font-size: 12px; color: #b8bfd3; margin-bottom: 5px;">Mã phòng</label>
                         <input id="collab-input-room" type="text" value="${defaultRoomId}" placeholder="Ví dụ: phong-chinh-1" style="
-                            width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06);
-                            border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 10px 14px;
-                            color: #70d6ff; font-weight: 600; font-size: 14px; outline: none; transition: border-color 0.2s;
+                            width: 100%; box-sizing: border-box; background: #1b1d28;
+                            border: 1px solid rgba(255,255,255,0.2); border-radius: 5px; padding: 8px 12px;
+                            color: #4C97FF; font-weight: 600; font-size: 13px; outline: none;
                         " />
                     </div>
 
-                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
                         <button id="collab-btn-cancel" style="
-                            background: rgba(255,255,255,0.08); border: none; padding: 10px 18px; border-radius: 10px;
-                            color: #cbd5e1; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+                            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); padding: 7px 16px; border-radius: 5px;
+                            color: #fff; font-size: 12px; cursor: pointer;
                         ">Hủy</button>
                         <button id="collab-btn-confirm" style="
-                            background: linear-gradient(135deg, #0066ff, #00aaff); border: none; padding: 10px 22px; border-radius: 10px;
-                            color: #fff; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 15px rgba(0, 102, 255, 0.4);
-                            transition: transform 0.15s, opacity 0.2s;
-                        ">Kết nối ngay</button>
+                            background: #4C97FF; border: none; padding: 7px 18px; border-radius: 5px;
+                            color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+                        ">Tham gia</button>
                     </div>
                 </div>
             `;
@@ -163,15 +192,8 @@
             const inputName = overlay.querySelector('#collab-input-name');
             const inputRoom = overlay.querySelector('#collab-input-room');
 
-            [inputName, inputRoom].forEach(inp => {
-                inp.onfocus = () => { inp.style.borderColor = '#0088ff'; };
-                inp.onblur = () => { inp.style.borderColor = 'rgba(255,255,255,0.15)'; };
-            });
-
-            overlay.querySelector('#collab-btn-cancel').onclick = () => {
-                overlay.remove();
-                resolve(null);
-            };
+            overlay.querySelector('#collab-modal-close').onclick = () => { overlay.remove(); resolve(null); };
+            overlay.querySelector('#collab-btn-cancel').onclick = () => { overlay.remove(); resolve(null); };
 
             const confirmAction = () => {
                 const nameVal = inputName.value.trim() || myUserName;
@@ -187,7 +209,190 @@
         });
     }
 
-    // Kiểm tra xem trang phục có đang bị người khác khóa chỉnh sửa hay không
+    // --- HỆ THỐNG TRÒ CHUYỆN (CHAT DRAWER) THEO GIAO DIỆN TURBOWARP ---
+    function setupChatUI() {
+        if (!chatToggleBtnEl) {
+            chatToggleBtnEl = document.createElement('div');
+            chatToggleBtnEl.id = 'collab-chat-toggle-btn';
+            chatToggleBtnEl.style.cssText = `
+                position: fixed; bottom: 20px; right: 20px;
+                width: 44px; height: 44px; border-radius: 50%;
+                background: #4C97FF; color: #fff;
+                display: flex; align-items: center; justify-content: center;
+                cursor: pointer; z-index: 999998; box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+                user-select: none; transition: transform 0.15s ease;
+            `;
+            chatToggleBtnEl.title = 'Trò chuyện';
+            chatToggleBtnEl.innerHTML = `
+                ${ICONS.chat}
+                <span id="collab-chat-unread" style="
+                    display: none; position: absolute; top: -3px; right: -3px;
+                    background: #ff4d4f; color: #fff; border-radius: 10px;
+                    padding: 1px 5px; font-size: 10px; font-weight: bold; border: 2px solid #1b1d28;
+                ">0</span>
+            `;
+            chatToggleBtnEl.onclick = () => toggleChatUI();
+            document.body.appendChild(chatToggleBtnEl);
+        }
+
+        if (!chatDrawerEl) {
+            chatDrawerEl = document.createElement('div');
+            chatDrawerEl.id = 'collab-chat-drawer';
+            chatDrawerEl.style.cssText = `
+                position: fixed; bottom: 74px; right: 20px; width: 310px; height: 380px;
+                background: #252839; border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+                display: none; flex-direction: column; z-index: 999998;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; overflow: hidden;
+            `;
+
+            chatDrawerEl.innerHTML = `
+                <div style="background:#1e202c; padding:10px 14px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:13px; font-weight:600; color:#fff; display:flex; align-items:center; gap:6px;">
+                        ${ICONS.chat} Trò chuyện
+                    </span>
+                    <div id="collab-chat-close-btn" style="cursor:pointer; color:#858ca0;">${ICONS.close}</div>
+                </div>
+                <div id="collab-chat-messages" style="flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px;"></div>
+                <div style="padding:8px 10px; background:#1e202c; border-top:1px solid rgba(255,255,255,0.1); display:flex; gap:6px;">
+                    <input id="collab-chat-input" type="text" placeholder="Nhập tin nhắn..." style="
+                        flex:1; background:#141620; border:1px solid rgba(255,255,255,0.15);
+                        border-radius:4px; padding:6px 10px; color:#fff; font-size:12px; outline:none;
+                    " />
+                    <button id="collab-chat-send-btn" style="
+                        background:#4C97FF; border:none; border-radius:4px; padding:6px 10px;
+                        color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center;
+                    ">${ICONS.send}</button>
+                </div>
+            `;
+
+            document.body.appendChild(chatDrawerEl);
+
+            const inputEl = chatDrawerEl.querySelector('#collab-chat-input');
+            const sendBtn = chatDrawerEl.querySelector('#collab-chat-send-btn');
+            const closeBtn = chatDrawerEl.querySelector('#collab-chat-close-btn');
+
+            closeBtn.onclick = () => toggleChatUI(false);
+
+            const triggerSend = () => {
+                const text = inputEl.value.trim();
+                if (!text || !room) return;
+                inputEl.value = '';
+                broadcastChatMessage(text);
+            };
+
+            sendBtn.onclick = triggerSend;
+            inputEl.onkeydown = (e) => { if (e.key === 'Enter') triggerSend(); };
+        }
+    }
+
+    function toggleChatUI(forceState) {
+        isChatOpen = (typeof forceState === 'boolean') ? forceState : !isChatOpen;
+        if (!chatDrawerEl) return;
+
+        chatDrawerEl.style.display = isChatOpen ? 'flex' : 'none';
+        if (isChatOpen) {
+            unreadCount = 0;
+            const badge = document.getElementById('collab-chat-unread');
+            if (badge) badge.style.display = 'none';
+            const msgBox = chatDrawerEl.querySelector('#collab-chat-messages');
+            if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
+            const inp = chatDrawerEl.querySelector('#collab-chat-input');
+            if (inp) inp.focus();
+        }
+    }
+
+    function broadcastChatMessage(text) {
+        if (!room) return;
+        const msg = {
+            type: 'CHAT_MESSAGE',
+            sender: myUserName,
+            text: text,
+            time: Date.now()
+        };
+        room.broadcastEvent(msg);
+        appendChatMessage(msg);
+    }
+
+    function appendChatMessage(msg) {
+        chatMessages.push(msg);
+        if (chatMessages.length > 100) chatMessages.shift();
+
+        if (!isChatOpen) {
+            unreadCount++;
+            const badge = document.getElementById('collab-chat-unread');
+            if (badge) {
+                badge.textContent = unreadCount > 9 ? '9+' : unreadCount;
+                badge.style.display = 'inline-block';
+            }
+        }
+
+        const msgBox = document.getElementById('collab-chat-messages');
+        if (!msgBox) return;
+
+        const isMe = msg.sender === myUserName;
+        const timeStr = new Date(msg.time || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        const row = document.createElement('div');
+        row.style.cssText = `
+            display: flex; flex-direction: column;
+            align-items: ${isMe ? 'flex-end' : 'flex-start'};
+        `;
+
+        row.innerHTML = `
+            <span style="font-size: 10.5px; color: #858ca0; margin-bottom: 2px;">
+                ${isMe ? 'Bạn' : msg.sender} • ${timeStr}
+            </span>
+            <div style="
+                background: ${isMe ? '#4C97FF' : '#33374b'}; color: #fff;
+                padding: 6px 10px; border-radius: 6px; font-size: 12px;
+                max-width: 80%; word-break: break-word; line-height: 1.35;
+            ">${msg.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+        `;
+
+        msgBox.appendChild(row);
+        msgBox.scrollTop = msgBox.scrollHeight;
+    }
+
+    function destroyChatUI() {
+        if (chatDrawerEl) { chatDrawerEl.remove(); chatDrawerEl = null; }
+        if (chatToggleBtnEl) { chatToggleBtnEl.remove(); chatToggleBtnEl = null; }
+        chatMessages = [];
+        isChatOpen = false;
+        unreadCount = 0;
+    }
+
+    // THOÁT PHÒNG VÀ DỌN DẸP SẠCH GIAO DIỆN
+    function leaveCollabRoom() {
+        if (!room) return;
+        try {
+            releaseCostumeLock();
+            client.leave(currentRoomId);
+        } catch (e) {
+            console.warn("[Collab] Lỗi thoát phòng:", e);
+        }
+
+        room = null;
+        currentRoomId = null;
+
+        if (navBarBadgeEl) {
+            navBarBadgeEl.remove();
+            navBarBadgeEl = null;
+        }
+
+        destroyChatUI();
+
+        for (const [id, el] of cursorElements) el.remove();
+        cursorElements.clear();
+
+        updateDOMCostumeCurtain(false);
+        hideCostumeLock();
+
+        showCostumeLock('Đã rời khỏi phòng cộng tác');
+        setTimeout(() => hideCostumeLock(), 2500);
+    }
+
+    // KIỂM TRA QUYỀN SỬA TRANG PHỤC
     function getOtherCostumeEditor(spriteKey, costumeIndex) {
         if (!room) return null;
         const others = room.getOthers();
@@ -206,7 +411,6 @@
         return null;
     }
 
-    // Chiếm giữ quyền sửa trang phục & kích hoạt đồng bộ 5s cho người khác xem
     function acquireCostumeLock(spriteKey, costumeIndex) {
         if (!room) return;
         room.updatePresence({
@@ -229,7 +433,6 @@
         }, 8000);
     }
 
-    // Nhả quyền chỉnh sửa trang phục
     function releaseCostumeLock() {
         if (liveCostumeSyncInterval) {
             clearInterval(liveCostumeSyncInterval);
@@ -245,7 +448,6 @@
         }
     }
 
-    // Hàm gửi dữ liệu hình ảnh hiện tại mỗi 5 giây
     function sendLiveCostumeSync() {
         if (!room || isApplyingRemote) return;
         const target = Scratch.vm.editingTarget;
@@ -268,10 +470,9 @@
         }
     }
 
-    // TẤM MÀN CHẮN PAINT EDITOR HIỆN ĐẠI (TỰ ĐỘNG BIẾN MẤT KHI THOÁT KHỎI TAB COSTUME)
+    // MÀN CHẮN TRANG PHỤC TURBOWARP (TỰ ẨN 100% KHI THOÁT KHỎI TAB COSTUME)
     let paintCurtainEl = null;
     function updateDOMCostumeCurtain(isLocked, editorName) {
-        // [QUAN TRỌNG NHẤT]: Nếu người dùng KHÔNG ở tab costume, ẩn ngay lập tức!
         if (!isLocked || !isCostumeTabActive()) {
             if (paintCurtainEl) paintCurtainEl.style.display = 'none';
             return;
@@ -303,60 +504,51 @@
             left: ${rect.left}px;
             width: ${rect.width}px;
             height: ${rect.height}px;
-            background: rgba(10, 14, 26, 0.78);
-            backdrop-filter: blur(5px);
-            -webkit-backdrop-filter: blur(5px);
+            background: rgba(20, 22, 33, 0.75);
             z-index: 99999;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
             color: white;
             cursor: not-allowed;
             pointer-events: all;
             user-select: none;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            transition: opacity 0.2s ease;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
         `;
 
         paintCurtainEl.innerHTML = `
             <div style="
-                background: linear-gradient(145deg, rgba(28, 30, 44, 0.95), rgba(18, 20, 32, 0.95));
-                padding: 24px 32px; border-radius: 16px;
-                border: 1px solid rgba(255, 77, 77, 0.45);
-                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 25px rgba(255, 51, 68, 0.2);
+                background: #252839; padding: 20px 28px; border-radius: 8px;
+                border: 1px solid rgba(255, 77, 79, 0.4); box-shadow: 0 10px 30px rgba(0,0,0,0.5);
                 text-align: center; pointer-events: none; max-width: 320px;
             ">
-                <div style="font-size: 32px; margin-bottom: 8px; filter: drop-shadow(0 2px 8px rgba(255,50,50,0.5));">🔒</div>
-                <div style="font-size: 16px; font-weight: 700; color: #ff5252; letter-spacing: 0.5px; margin-bottom: 6px;">KHU VỰC VẼ ĐANG BỊ KHÓA</div>
-                <div style="font-size: 13px; color: #f1f5f9; line-height: 1.4;"><strong style="color:#70d6ff;">${editorName}</strong> đang trực tiếp chỉnh sửa trang phục này!</div>
-                <div style="font-size: 11.5px; color: #94a3b8; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
-                    ⚡ Nét vẽ sẽ tự động cập nhật thời gian thực...
+                <div style="display:flex; justify-content:center; margin-bottom:8px;">${ICONS.lock}</div>
+                <div style="font-size: 14px; font-weight: 600; color: #ff7875; margin-bottom: 6px;">Khu vực vẽ đang bị khóa</div>
+                <div style="font-size: 12.5px; color: #e2e8f0; line-height: 1.4;"><strong style="color:#4C97FF;">${editorName}</strong> đang trực tiếp chỉnh sửa trang phục này.</div>
+                <div style="font-size: 11px; color: #858ca0; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px;">
+                    Các nét vẽ sẽ tự động cập nhật thời gian thực
                 </div>
             </div>
         `;
     }
 
-    // THÔNG BÁO TOAST GÓC MÀN HÌNH NÂNG CẤP GIAO DIỆN
+    // THÔNG BÁO TOAST GÓC MÀN HÌNH THEO ĐÚNG PHONG CÁCH TURBOWARP
     let lockOverlay = null;
     function showCostumeLock(message) {
         if (!lockOverlay) {
             lockOverlay = document.createElement('div');
             lockOverlay.id = 'collab-costume-lock-banner';
             lockOverlay.style.cssText = `
-                position: fixed; bottom: 24px; right: 24px;
-                background: linear-gradient(135deg, rgba(16, 20, 34, 0.95), rgba(12, 14, 24, 0.95));
-                color: #f8fafc; padding: 12px 20px; border-radius: 12px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.5), 0 0 1px 1px rgba(255,255,255,0.1);
-                z-index: 1000000; display: flex; align-items: center; gap: 12px;
-                border-left: 4px solid #0077ff; font-size: 13px; font-weight: 500;
-                pointer-events: none; transition: opacity 0.25s, transform 0.25s;
-                backdrop-filter: blur(6px);
+                position: fixed; bottom: 74px; right: 24px;
+                background: #252839; color: #f8fafc; padding: 10px 16px; border-radius: 6px;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.12);
+                z-index: 1000000; display: flex; align-items: center; gap: 10px;
+                font-size: 12.5px; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
             `;
             document.body.appendChild(lockOverlay);
         }
-        lockOverlay.innerHTML = `<span style="font-size:16px;">⏳</span> <span>${message}</span>`;
+        lockOverlay.innerHTML = `<span>${message}</span>`;
         lockOverlay.style.opacity = '1';
         lockOverlay.style.transform = 'translateY(0)';
     }
@@ -364,11 +556,11 @@
     function hideCostumeLock() {
         if (lockOverlay) {
             lockOverlay.style.opacity = '0';
-            lockOverlay.style.transform = 'translateY(12px)';
+            lockOverlay.style.transform = 'translateY(10px)';
         }
     }
 
-    // LẮNG NGHE CHUYỂN TAB & CLICK CHUỘT ĐỂ XÓA MÀN KHÓA TỨC THÌ
+    // LẮNG NGHE ĐỔI TAB VÀ SỰ KIỆN CLICK CHUỘT
     function setupCostumeInteractionListeners() {
         const handleInteraction = (e) => {
             if (!room || isApplyingRemote) return;
@@ -398,7 +590,6 @@
         window.addEventListener('pointerdown', handleInteraction, true);
         window.addEventListener('keydown', handleInteraction, true);
 
-        // Lắng nghe click toàn trang: Nếu bấm sang tab Code/Sounds, dập tắt màn che và thông báo spectate ngay
         document.addEventListener('click', () => {
             setTimeout(() => {
                 if (!isCostumeTabActive()) {
@@ -1001,23 +1192,39 @@
 
     class LiveblocksCollab {
         getInfo() {
+            // Icon mạng cộng tác vector SVG nhúng trực tiếp chuẩn TurboWarp
+            const COLLAB_ICON = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>';
+
             return {
                 id: 'liveblockscollab',
                 name: 'Live Collab Pro',
-                color1: '#0055ff', color2: '#0044cc',
+                menuIconURI: COLLAB_ICON,
+                blockIconURI: COLLAB_ICON,
+                color1: '#4C97FF',
+                color2: '#3373CC',
+                color3: '#285bab',
                 blocks: [
                     {
                         opcode: 'openModalBlock',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: '✨ Mở bảng kết nối phòng Collab'
+                        text: 'Kết nối phòng'
                     },
                     {
-                        opcode: 'connectRoom',
+                        opcode: 'leaveRoomBlock',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: 'Vào phòng chung [ROOM_ID] với tên [NAME]',
+                        text: 'Thoát phòng'
+                    },
+                    {
+                        opcode: 'toggleChatBlock',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'Mở / Đóng cửa sổ Chat'
+                    },
+                    {
+                        opcode: 'sendChatBlock',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'Gửi tin nhắn [MESSAGE]',
                         arguments: {
-                            ROOM_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'phong-test-1' },
-                            NAME: { type: Scratch.ArgumentType.STRING, defaultValue: myUserName }
+                            MESSAGE: { type: Scratch.ArgumentType.STRING, defaultValue: 'Xin chào!' }
                         }
                     }
                 ]
@@ -1026,7 +1233,7 @@
 
         async openModalBlock() {
             if (room) {
-                alert(`Bạn đã ở trong phòng "${currentRoomId}" rồi!`);
+                alert(`Bạn đang ở trong phòng "${currentRoomId}". Hãy thoát phòng trước nếu muốn đổi phòng!`);
                 return;
             }
             const modalResult = await openCollabJoinModal('phong-test-1');
@@ -1035,10 +1242,23 @@
             }
         }
 
-        connectRoom(args) {
-            const roomId = args.ROOM_ID || 'phong-test-1';
-            const name = args.NAME || myUserName;
-            this.startRoomConnection(roomId, name);
+        leaveRoomBlock() {
+            leaveCollabRoom();
+        }
+
+        toggleChatBlock() {
+            if (!room) {
+                alert('Vui lòng kết nối vào phòng trước khi mở Chat!');
+                return;
+            }
+            toggleChatUI();
+        }
+
+        sendChatBlock(args) {
+            const msg = (args.MESSAGE || '').toString().trim();
+            if (msg && room) {
+                broadcastChatMessage(msg);
+            }
         }
 
         startRoomConnection(roomId, userName) {
@@ -1046,14 +1266,14 @@
             currentRoomId = roomId;
             myUserName = userName;
 
-            console.log(`[Collab 🚀] Đang kết nối phòng: ${roomId} với tên: ${userName}...`);
+            console.log(`[Collab] Đang kết nối phòng: ${roomId} với tên: ${userName}...`);
             setupDOM();
             setupVMHooks();
             setupSpriteHooks();
             setupCostumeInteractionListeners();
 
-            // Hiển thị badge phòng ban đầu trên nav bar
             updateNavBarBadge(roomId, 1);
+            setupChatUI();
 
             try {
                 const response = client.enterRoom(roomId, {
@@ -1080,7 +1300,6 @@
                     let someoneEditingCurrentCostume = false;
                     let currentEditorName = "Người dùng khác";
 
-                    // Cập nhật số người online theo thời gian thực lên Nav Bar
                     updateNavBarBadge(currentRoomId, others.length + 1);
 
                     const currentEditingTarget = Scratch.vm.editingTarget;
@@ -1096,14 +1315,13 @@
                             let el = cursorElements.get(cid);
                             if (!el) {
                                 el = document.createElement('div');
-                                el.style.cssText = `position:absolute; width:15px; height:15px; background:#ff0044; border:2px solid #fff; border-radius:50%; transform:translate(-50%,-50%); transition: left 0.1s linear, top 0.1s linear; box-shadow: 0 2px 4px rgba(0,0,0,0.5); pointer-events: none; z-index: 999999;`;
+                                el.style.cssText = `position:absolute; width:13px; height:13px; background:#4C97FF; border:2px solid #fff; border-radius:50%; transform:translate(-50%,-50%); transition: left 0.1s linear, top 0.1s linear; box-shadow: 0 2px 4px rgba(0,0,0,0.4); pointer-events: none; z-index: 999999;`;
                                 cursorsContainer.appendChild(el);
                                 cursorElements.set(cid, el);
                             }
                             el.style.left = p.cursor.x + 'px'; el.style.top = p.cursor.y + 'px';
                         }
 
-                        // KIỂM TRA XEM CÓ AI ĐANG SỬA TRANG PHỤC NÀY KHÔNG
                         if (p && p.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
                             if (currentSyncKey && p.editingCostume.spriteKey === currentSyncKey) {
                                 if (p.editingCostume.costumeIndex === undefined || p.editingCostume.costumeIndex === currentCostumeIdx) {
@@ -1114,16 +1332,15 @@
                         }
                     });
 
-                    // [ĐÃ SỬA DỨT ĐIỂM]: Chỉ kích hoạt màn chắn nếu ĐANG THỰC SỰ MỞ TAB COSTUME
+                    // CHỈ HIỆN KHI ĐANG MỞ TAB COSTUMES
                     if (isCostumeTabActive()) {
                         updateDOMCostumeCurtain(someoneEditingCurrentCostume, currentEditorName);
                         if (someoneEditingCurrentCostume) {
-                            showCostumeLock(`👁️ Đang xem trực tiếp: ${currentEditorName} đang vẽ trang phục này!`);
+                            showCostumeLock(`${currentEditorName} đang vẽ trang phục này...`);
                         } else if (!isCostumeLocked) {
                             hideCostumeLock();
                         }
                     } else {
-                        // Nếu đã thoát tab costume: Ẩn dứt điểm màn che và thông báo
                         if (paintCurtainEl) paintCurtainEl.style.display = 'none';
                         if (!isCostumeLocked) hideCostumeLock();
                     }
@@ -1134,6 +1351,11 @@
                 });
 
                 room.subscribe("event", ({ event }) => {
+                    // NHẬN TIN NHẮN CHAT TỪ THÀNH VIÊN KHÁC
+                    if (event.type === 'CHAT_MESSAGE') {
+                        appendChatMessage(event);
+                    }
+
                     // 1. NHẬN KHỐI LỆNH & CHÚ THÍCH (NOTES) CÓ BẢO VỆ CHỐNG GHI ĐÈ
                     if (event.type === 'INSTANT_BLOCK_SYNC') {
                         const target = getTargetBySyncKey(event.spriteKey);
