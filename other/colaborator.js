@@ -1225,7 +1225,7 @@
             return {
                 id: 'liveblockscollab',
                 name: 'Collaborative Coding',
-                menuIconURI: DANV_LOGO_URL,
+                menuIconURI: 'https://github.com/danvPR/aftercode-cloud-engine/blob/main/other/colab-icon.png?raw=true',
                 blockIconURI: 'https://github.com/danvPR/aftercode-cloud-engine/blob/main/other/colab-icon.png?raw=true',
                 color1: '#4C97FF',
                 color2: '#3373CC',
