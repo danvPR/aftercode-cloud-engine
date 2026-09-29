@@ -121,7 +121,9 @@
         chat: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`,
         send: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`,
         lock: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ff4d4f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>`,
-        close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`
+        close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`,
+        copy: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
+        check: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2fd67c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`
     };
 
     // KIỂM TRA CHÍNH XÁC XEM CÓ ĐANG Ở TAB VẼ TRANG PHỤC KHÔNG
@@ -145,7 +147,142 @@
 
     const DANV_LOGO_URL = 'https://github.com/danvPR/workshop/blob/main/Assets/Logo-Vi.png?raw=true';
 
-    // THANH ĐIỀU KHIỂN TRÊN NAVIGATION BAR (TỰ ĐỘNG HIỂN THỊ NÚT BẤM KẾT NỐI / THOÁT)
+    // --- HỆ THỐNG DANH SÁCH THÀNH VIÊN & SAO CHÉP MÃ PHÒNG ---
+    let usersPopoverEl = null;
+    let isUsersListOpen = false;
+
+    // HÀM SAO CHÉP MÃ PHÒNG CHUẨN CÓ PHẢN HỒI THỊ GIÁC
+    function copyRoomIdToClipboard() {
+        if (!currentRoomId) return;
+        navigator.clipboard.writeText(currentRoomId).then(() => {
+            showCostumeLock(`Đã sao chép mã phòng: "${currentRoomId}"`);
+            setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2000);
+
+            // Cập nhật đổi icon tức thì sang icon tích xanh
+            const copyIcons = document.querySelectorAll('.collab-copy-btn-icon');
+            copyIcons.forEach(btn => {
+                btn.innerHTML = ICONS.check;
+                setTimeout(() => { btn.innerHTML = ICONS.copy; }, 2000);
+            });
+        }).catch(err => {
+            console.error("[Collab] Lỗi sao chép mã phòng:", err);
+        });
+    }
+
+    // BẢNG DANH SÁCH USER FLOATING DƯỚI THANH MENU
+    function toggleUsersListUI(forceState) {
+        isUsersListOpen = (typeof forceState === 'boolean') ? forceState : !isUsersListOpen;
+        if (!isUsersListOpen) {
+            if (usersPopoverEl) usersPopoverEl.style.display = 'none';
+            return;
+        }
+
+        if (!usersPopoverEl) {
+            usersPopoverEl = document.createElement('div');
+            usersPopoverEl.id = 'collab-users-popover';
+            usersPopoverEl.style.cssText = `
+                position: fixed; width: 280px; background: #252839;
+                border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 10000002;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                overflow: hidden; display: flex; flex-direction: column;
+            `;
+            document.body.appendChild(usersPopoverEl);
+
+            // Đóng khi nhấp chuột ra ngoài bảng
+            document.addEventListener('pointerdown', (e) => {
+                if (!isUsersListOpen || !usersPopoverEl) return;
+                const inBadge = navBarBadgeEl && navBarBadgeEl.contains(e.target);
+                const inPopover = usersPopoverEl.contains(e.target);
+                if (!inBadge && !inPopover) toggleUsersListUI(false);
+            });
+        }
+
+        // Căn vị trí thả xuống ngay bên dưới nút số lượng thành viên
+        if (navBarBadgeEl) {
+            const rect = navBarBadgeEl.getBoundingClientRect();
+            usersPopoverEl.style.top = (rect.bottom + 6) + 'px';
+            usersPopoverEl.style.right = (window.innerWidth - rect.right) + 'px';
+        }
+
+        usersPopoverEl.style.display = 'flex';
+        renderUsersList();
+    }
+
+    // VẼ CHI TIẾT TỪNG USER TRONG PHÒNG
+    function renderUsersList() {
+        if (!usersPopoverEl || !room) return;
+        const others = room.getOthers();
+        const total = others.length + 1;
+        const now = Date.now();
+
+        let usersHTML = `
+            <div style="padding:10px 14px; background:#1e202c; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-size:12.5px; font-weight:600; color:#fff; display:flex; align-items:center; gap:6px;">
+                    ${ICONS.users} Thành viên trong phòng (${total})
+                </span>
+                <div id="collab-users-close-btn" style="cursor:pointer; color:#858ca0; display:flex; align-items:center;">${ICONS.close}</div>
+            </div>
+
+            <div style="padding:8px 12px; background:rgba(0,0,0,0.22); border-bottom:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between;">
+                <span style="font-size:12px; color:#a1aabf;">Mã: <strong style="color:#4C97FF;">${currentRoomId}</strong></span>
+                <button id="collab-popover-copy-btn" style="
+                    background: #4C97FF; border:none; border-radius:4px; padding:4px 8px;
+                    color:#fff; font-size:11px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:4px;
+                "><span class="collab-copy-btn-icon">${ICONS.copy}</span> Sao chép</button>
+            </div>
+
+            <div style="max-height:230px; overflow-y:auto; padding:6px 0;">
+                <!-- Chính bạn -->
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:7px 14px; border-bottom:1px solid rgba(255,255,255,0.04);">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="width:7px; height:7px; border-radius:50%; background:#2fd67c;"></span>
+                        <div style="display:flex; flex-direction:column;">
+                            <span style="font-size:12px; color:#fff; font-weight:600;">${myUserName} <span style="color:#4C97FF; font-size:11px; font-weight:normal;">(Bạn)</span></span>
+                            <span style="font-size:10px; color:#858ca0;">Đang kết nối</span>
+                        </div>
+                    </div>
+                </div>
+        `;
+
+        // Các người dùng khác
+        others.forEach(user => {
+            const p = user.presence;
+            const name = p?.name || `Người dùng #${user.connectionId}`;
+            let statusText = 'Đang hoạt động';
+            if (p?.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
+                statusText = `Đang vẽ: [${p.editingCostume.spriteKey}]`;
+            }
+
+            usersHTML += `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:7px 14px; border-bottom:1px solid rgba(255,255,255,0.04);">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="width:7px; height:7px; border-radius:50%; background:#2fd67c;"></span>
+                        <div style="display:flex; flex-direction:column;">
+                            <span style="font-size:12px; color:#e2e8f0; font-weight:500;">${name}</span>
+                            <span style="font-size:10px; color:${p?.editingCostume ? '#ff7875' : '#858ca0'};">${statusText}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        usersHTML += `</div>`;
+        usersPopoverEl.innerHTML = usersHTML;
+
+        const closeBtn = usersPopoverEl.querySelector('#collab-users-close-btn');
+        if (closeBtn) closeBtn.onclick = () => toggleUsersListUI(false);
+
+        const copyBtn = usersPopoverEl.querySelector('#collab-popover-copy-btn');
+        if (copyBtn) copyBtn.onclick = copyRoomIdToClipboard;
+    }
+
+    function destroyUsersUI() {
+        if (usersPopoverEl) { usersPopoverEl.remove(); usersPopoverEl = null; }
+        isUsersListOpen = false;
+    }
+
+    // THANH ĐIỀU KHIỂN TRÊN NAVIGATION BAR
     function updateNavBarBadge(roomId, onlineCount = 1) {
         const navBar = document.querySelector('[class*="menu-bar_account-info-group"]') ||
                        document.querySelector('[class*="menu-bar_main-menu"]');
@@ -157,7 +294,7 @@
             navBar.prepend(navBarBadgeEl);
         }
 
-        // Trường hợp 1: Chưa kết nối phòng -> Hiển thị nút bấm "Kết nối"
+        // Trường hợp 1: Chưa kết nối phòng
         if (!roomId) {
             navBarBadgeEl.style.cssText = `
                 display: inline-flex; align-items: center; gap: 6px;
@@ -165,69 +302,7 @@
                 font-size: 12px; font-weight: 600; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
                 cursor: pointer; user-select: none; margin: 0 6px; transition: background 0.15s ease;
             `;
-            navBarBadgeEl.title = 'Bấm để kết nối phòng cộng tác';
-            navBarBadgeEl.innerHTML = `
-                <img src="${DANV_LOGO_URL}" style="height: 14px; width: auto; object-fit: contain;" />
-                <span>Kết nối phòng</span>
-            `;
-            navBarBadgeEl.onmouseenter = () => { navBarBadgeEl.style.background = '#3373CC'; };
-            navBarBadgeEl.onmouseleave = () => { navBarBadgeEl.style.background = '#4C97FF'; };
-            navBarBadgeEl.onclick = () => {
-                if (window.collabInstance) window.collabInstance.openModalBlock();
-            };
-            return;
-        }
-
-        // Trường hợp 2: Đã kết nối -> Hiển thị thông tin phòng, Chat và nút Thoát
-        navBarBadgeEl.style.cssText = `
-            display: inline-flex; align-items: center; gap: 8px;
-            background: hsla(215, 100%, 65%, 0.15);
-            border: 1px solid hsla(215, 100%, 65%, 0.35);
-            padding: 4px 10px; border-radius: 6px; color: #ffffff;
-            font-size: 12px; font-weight: 500; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-            user-select: none; margin: 0 6px;
-        `;
-
-        navBarBadgeEl.innerHTML = `
-            <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#2fd67c;"></span>
-            <span id="collab-badge-copy" title="Bấm để sao chép mã phòng" style="cursor:pointer; display:flex; align-items:center; gap:4px;">
-                Phòng: <strong style="color:#4C97FF;">${roomId}</strong>
-            </span>
-            <span style="display:inline-flex; align-items:center; gap:3px; background:rgba(0,0,0,0.25); padding:2px 6px; border-radius:4px; font-size:11px;">
-                ${ICONS.users} ${onlineCount}
-            </span>
-            <button id="collab-badge-chat-btn" title="Mở bảng trò chuyện" style="
-                background: rgba(76, 151, 255, 0.2); border: none; border-radius: 4px; padding: 3px 6px;
-                cursor: pointer; color: #fff; display: flex; align-items: center; justify-content: center;
-            ">${ICONS.chat}</button>
-            <button id="collab-badge-leave-btn" title="Thoát phòng" style="
-                background: rgba(255, 77, 79, 0.2); border: none; border-radius: 4px; padding: 3px 6px;
-                cursor: pointer; color: #ff7875; display: flex; align-items: center; justify-content: center;
-            ">${ICONS.exit}</button>
-        `;
-
-        const copyBtn = navBarBadgeEl.querySelector('#collab-badge-copy');
-        if (copyBtn) {
-            copyBtn.onclick = () => {
-                navigator.clipboard.writeText(roomId).then(() => {
-                    showCostumeLock(`Đã sao chép mã phòng "${roomId}"`);
-                    setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2000);
-                });
-            };
-        }
-
-        const chatBtn = navBarBadgeEl.querySelector('#collab-badge-chat-btn');
-        if (chatBtn) chatBtn.onclick = () => toggleChatUI();
-
-        const leaveBtn = navBarBadgeEl.querySelector('#collab-badge-leave-btn');
-        if (leaveBtn) {
-            leaveBtn.onclick = () => {
-                if (confirm('Bạn có chắc muốn thoát khỏi phòng cộng tác này?')) {
-                    leaveCollabRoom();
-                }
-            };
-        }
-    }
+            navBarBadgeEl.title =
 
     // MODAL HỎI ID PHÒNG CÓ LOGO DANVWORKSHOP
     function openCollabJoinModal(defaultRoomId = 'phong-test-1') {
@@ -486,6 +561,7 @@
         updateNavBarBadge(null);
 
         destroyChatUI();
+        destroyUsersUI();
 
         for (const [id, el] of cursorElements) el.remove();
         cursorElements.clear();
@@ -1434,6 +1510,7 @@
                     let currentEditorName = "Người dùng khác";
 
                     updateNavBarBadge(currentRoomId, others.length + 1);
+                    if (isUsersListOpen) renderUsersList();
 
                     const currentEditingTarget = Scratch.vm.editingTarget;
                     const currentSyncKey = currentEditingTarget ? getSyncKey(currentEditingTarget) : null;
@@ -1489,8 +1566,16 @@
                         appendChatMessage(event);
                     }
 
-                    // PHẢN HỒI GỬI TOÀN BỘ SPRITE CHO NGƯỜI MỚI VÀO PHÒNG
+                    // PHẢN HỒI GỬI TOÀN BỘ SPRITE CHO NGƯỜI MỚI VÀO PHÒNG (CHỈ 1 NGƯỜI GỬI ĐỂ TRÁNH SPAM)
                     if (event.type === 'REQUEST_ROOM_FULL_SYNC') {
+                        const self = room.getSelf ? room.getSelf() : null;
+                        const others = room.getOthers ? room.getOthers() : [];
+                        // Chỉ client có connectionId nhỏ nhất mới phản hồi
+                        if (self && others.length > 0) {
+                            const isHost = !others.some(u => u.connectionId < self.connectionId);
+                            if (!isHost) return;
+                        }
+
                         const currentSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
                         for (const sp of currentSprites) {
                             try {
@@ -1716,6 +1801,19 @@
                                                         addedTarget.sprite.name = session.spriteKey;
                                                     }
 
+                                                    // TỰ ĐỘNG GẮN KHỐI LỆNH TỪ SHAREDBLOCKS CHO SPRITE VỪA NHẬN TỪ MẠNG
+                                                    if (sharedBlocks && addedTarget) {
+                                                        const cloudStr = sharedBlocks.get(session.spriteKey);
+                                                        if (cloudStr) {
+                                                            try {
+                                                                const parsedBlocks = JSON.parse(cloudStr);
+                                                                applyBlocksToTarget(addedTarget, parsedBlocks, parsedBlocks.version || 0);
+                                                            } catch (errBlocks) {
+                                                                console.error("[Collab] Lỗi áp khối lệnh cho sprite nhận từ xa:", errBlocks);
+                                                            }
+                                                        }
+                                                    }
+
                                                     // Giữ người dùng ở lại đúng Sprite và Costume hiện tại của mình
                                                     if (activeTargetIdBefore && Scratch.vm.runtime.getTargetById(activeTargetIdBefore)) {
                                                         if (!Scratch.vm.editingTarget || Scratch.vm.editingTarget.id !== activeTargetIdBefore) {
@@ -1808,20 +1906,19 @@
                 room.getStorage().then(async (storage) => {
                     sharedBlocks = storage.root.get("sharedBlocks");
                     const hasRoomData = sharedBlocks && sharedBlocks.size > 0;
+                    const others = room.getOthers ? room.getOthers() : [];
+                    const hasOthersOnline = others && others.length > 0;
 
-                    // NẾU PHÒNG ĐÃ CÓ DATA: XÓA DỰ ÁN HIỆN TẠI TRÊN MÁY VÀ THÔNG BÁO CHO USER
-                    if (hasRoomData) {
-                        updateLoadingProgress('Phát hiện dữ liệu phòng!', 'Đang xóa dự án hiện tại để đồng bộ...', 50);
-                        showCostumeLock('⚠️ Đã xóa dự án hiện tại để tải dữ liệu của phòng!');
+                    // TRƯỜNG HỢP 1: CÓ NGƯỜI KHÁC ĐANG ONLINE -> MỚI XÓA VÀ YÊU CẦU ĐỒNG BỘ SPRITE
+                    if (hasOthersOnline) {
+                        updateLoadingProgress('Đồng bộ cùng phòng...', 'Đang tải Sprite và Trang phục từ các thành viên...', 50);
 
-                        enterRemoteScope(); // Khóa ngữ cảnh để việc xóa cục bộ không bị gửi ngược lên phòng
+                        enterRemoteScope();
                         try {
-                            // 1. Xóa toàn bộ Sprite hiện có (trừ Sân khấu)
                             const localSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
                             for (const sp of localSprites) {
                                 Scratch.vm.deleteSprite(sp.id);
                             }
-                            // 2. Làm sạch khối lệnh và ghi chú cũ của Sân khấu
                             const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
                             if (stageTarget && stageTarget.blocks) {
                                 stageTarget.blocks._blocks = {};
@@ -1833,9 +1930,14 @@
                             exitRemoteScope();
                         }
 
-                        // Yêu cầu các thành viên đang online gửi cấu trúc nhân vật sang
                         room.broadcastEvent({ type: 'REQUEST_ROOM_FULL_SYNC' });
-                        await new Promise(res => setTimeout(res, 250));
+                        // Chờ đủ thời gian để các chunks sprite bắt đầu được nạp (1000ms)
+                        await new Promise(res => setTimeout(res, 1000));
+
+                    } else if (hasRoomData) {
+                        // TRƯỜNG HỢP 2: KHÔNG CÓ AI ONLINE (VÀO LẠI PHÒNG 1 MÌNH)
+                        // TUYỆT ĐỐI KHÔNG XÓA SPRITE! Giữ nguyên nhân vật và nạp đè khối lệnh từ phòng lên
+                        updateLoadingProgress('Khôi phục phòng...', 'Đang khôi phục khối lệnh đã lưu...', 60);
                     }
 
                     updateLoadingProgress('Tải dữ liệu dự án...', 'Đang nạp cấu trúc khối lệnh...', 75);
@@ -1845,11 +1947,24 @@
                         const targets = Scratch.vm.runtime.targets || [];
                         for (let i = 0; i < targets.length; i++) {
                             const target = targets[i];
-                            const cloudStr = sharedBlocks.get(getSyncKey(target));
+                            const syncK = getSyncKey(target);
+                            const cloudStr = sharedBlocks.get(syncK);
                             if (cloudStr) {
                                 applyBlocksToTarget(target, JSON.parse(cloudStr));
+                            } else if (!hasOthersOnline) {
+                                // Nếu là người duy nhất và target có code cục bộ chưa được lưu: đẩy lên server
+                                const bRef = target.blocks ? target.blocks._blocks : null;
+                                if (bRef && Object.keys(bRef).length > 0) {
+                                    const initPayload = {
+                                        blocks: bRef,
+                                        comments: target.blocks._comments || {},
+                                        version: 1,
+                                        timestamp: Date.now()
+                                    };
+                                    sharedBlocks.set(syncK, JSON.stringify(initPayload));
+                                }
                             }
-                            updateLoadingProgress('Tải dữ liệu dự án...', `Đang đồng bộ [${getSyncKey(target)}]...`, 75 + Math.round(((i + 1) / targets.length) * 20));
+                            updateLoadingProgress('Tải dữ liệu dự án...', `Đang đồng bộ [${syncK}]...`, 75 + Math.round(((i + 1) / targets.length) * 20));
                         }
                         Scratch.vm.emitWorkspaceUpdate(); 
                         Scratch.vm.emitTargetsUpdate();
