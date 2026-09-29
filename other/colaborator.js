@@ -1203,6 +1203,11 @@
         // 1. Tự động kéo code và note về khi chuyển Sprite
         const originalSetEditingTarget = Scratch.vm.setEditingTarget;
         Scratch.vm.setEditingTarget = function(targetId) {
+            // NẾU ĐANG NHẬN DỮ LIỆU TỪ XA: Chặn Scratch tự cướp sprite và costume của người dùng
+            if (isRemoteActive() && this.editingTarget) {
+                return;
+            }
+
             originalSetEditingTarget.call(this, targetId);
             if (sharedBlocks) {
                 const target = Scratch.vm.editingTarget;
@@ -1679,7 +1684,7 @@
                                         }
                                     }
 
-                                    // 4. NHẬN TẠO SPRITE MỚI QUA CHUNKING (CHỐNG VÒNG LẶP TUYỆT ĐỐI)
+                                    // 4. NHẬN TẠO SPRITE MỚI QUA CHUNKING (GIỮ NGUYÊN SPRITE VÀ COSTUME HIỆN TẠI)
                                     if (session.action === 'SYNC_NEW_SPRITE') {
                                         if (data.actionId && handledActionIds.has(data.actionId)) {
                                             console.log("[Collab] Bỏ qua sprite đã tự tạo cục bộ:", data.actionId);
@@ -1688,6 +1693,11 @@
                                             enterRemoteScope();
                                             (async () => {
                                                 try {
+                                                    // Lưu lại chính xác Sprite và Costume bạn đang làm việc
+                                                    const activeTargetBefore = Scratch.vm.editingTarget;
+                                                    const activeTargetIdBefore = activeTargetBefore ? activeTargetBefore.id : null;
+                                                    const activeCostumeBefore = activeTargetBefore ? activeTargetBefore.currentCostume : 0;
+
                                                     if (data.costumes && Array.isArray(data.costumes)) {
                                                         for (const c of data.costumes) await deserializeCostume(c);
                                                     }
@@ -1704,6 +1714,16 @@
 
                                                     if (addedTarget && addedTarget.sprite && addedTarget.sprite.name !== session.spriteKey) {
                                                         addedTarget.sprite.name = session.spriteKey;
+                                                    }
+
+                                                    // Giữ người dùng ở lại đúng Sprite và Costume hiện tại của mình
+                                                    if (activeTargetIdBefore && Scratch.vm.runtime.getTargetById(activeTargetIdBefore)) {
+                                                        if (!Scratch.vm.editingTarget || Scratch.vm.editingTarget.id !== activeTargetIdBefore) {
+                                                            originalSetEditingTarget.call(Scratch.vm, activeTargetIdBefore);
+                                                        }
+                                                        if (Scratch.vm.editingTarget && Scratch.vm.editingTarget.currentCostume !== activeCostumeBefore) {
+                                                            Scratch.vm.editingTarget.setCostume(activeCostumeBefore);
+                                                        }
                                                     }
 
                                                     Scratch.vm.emitTargetsUpdate();
