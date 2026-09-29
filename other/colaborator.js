@@ -21,8 +21,11 @@
     let navBarBadgeEl = null;
 
     let sharedBlocks = null; 
+    let isApplyingRemote = false; // Đã khôi phục biến này để sửa lỗi ReferenceError sập khối lệnh
     let remoteOpDepth = 0; // Bộ đếm độ sâu ngữ cảnh từ xa (Chống xung đột đa luồng)
-    function isRemoteActive() { return remoteOpDepth > 0; }
+    
+    // Liên kết cả 2 cơ chế khóa (cũ và mới) để bảo vệ chặn phản hồi ngược
+    function isRemoteActive() { return remoteOpDepth > 0 || isApplyingRemote; } 
     function enterRemoteScope() { remoteOpDepth++; }
     function exitRemoteScope() { remoteOpDepth = Math.max(0, remoteOpDepth - 1); }
 
@@ -1307,6 +1310,28 @@
                 return result;
             };
         }
+
+        // 6. Chặn tải tệp dự án từ máy tính nếu vượt quá 5MB
+        const originalLoadProject = Scratch.vm.loadProject;
+        Scratch.vm.loadProject = async function(input) {
+            let fileSize = 0;
+            if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
+                fileSize = input.byteLength;
+            } else if (input instanceof Blob) {
+                fileSize = input.size;
+            } else if (typeof input === 'string') {
+                fileSize = new Blob([input]).size;
+            }
+
+            const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+            if (fileSize > MAX_SIZE) {
+                const sizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+                alert(`⚠️ TỆP DỰ ÁN QUÁ LỚN (${sizeMB} MB)!\n\nGiới hạn tối đa khi sử dụng Collab là 5.00 MB để tránh làm treo kết nối phòng và chạm trần băng thông Liveblocks.\n\nVui lòng tối ưu lại âm thanh/hình ảnh trước khi tải lên.`);
+                return Promise.reject(new Error("Project file exceeds 5MB limit"));
+            }
+
+            return originalLoadProject.call(this, input);
+        };
     }
 
     class LiveblocksCollab {
@@ -1457,6 +1482,29 @@
                     // NHẬN TIN NHẮN CHAT TỪ THÀNH VIÊN KHÁC
                     if (event.type === 'CHAT_MESSAGE') {
                         appendChatMessage(event);
+                    }
+
+                    // PHẢN HỒI GỬI TOÀN BỘ SPRITE CHO NGƯỜI MỚI VÀO PHÒNG
+                    if (event.type === 'REQUEST_ROOM_FULL_SYNC') {
+                        const currentSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
+                        for (const sp of currentSprites) {
+                            try {
+                                const targetJSON = sp.toJSON();
+                                targetJSON.blocks = {};
+                                targetJSON.sounds = [];
+                                const serializedCostumes = (sp.sprite.costumes || []).map(serializeCostume);
+                                const actionId = 'sync_newbie_' + sp.id + '_' + Date.now();
+                                handledActionIds.add(actionId);
+
+                                sendChunkedPayload('SYNC_NEW_SPRITE', getSyncKey(sp), {
+                                    actionId: actionId,
+                                    spriteJSON: targetJSON,
+                                    costumes: serializedCostumes
+                                });
+                            } catch (e) {
+                                console.error("[Collab] Lỗi đồng bộ sprite cho người mới:", e);
+                            }
+                        }
                     }
 
                     // 1. NHẬN KHỐI LỆNH & CHÚ THÍCH (NOTES) CÓ BẢO VỆ CHỐNG GHI ĐÈ
@@ -1738,8 +1786,39 @@
                 });
 
                 room.getStorage().then(async (storage) => {
-                    updateLoadingProgress('Tải dữ liệu dự án...', 'Đang nạp cấu trúc khối lệnh...', 75);
                     sharedBlocks = storage.root.get("sharedBlocks");
+                    const hasRoomData = sharedBlocks && sharedBlocks.size > 0;
+
+                    // NẾU PHÒNG ĐÃ CÓ DATA: XÓA DỰ ÁN HIỆN TẠI TRÊN MÁY VÀ THÔNG BÁO CHO USER
+                    if (hasRoomData) {
+                        updateLoadingProgress('Phát hiện dữ liệu phòng!', 'Đang xóa dự án hiện tại để đồng bộ...', 50);
+                        showCostumeLock('⚠️ Đã xóa dự án hiện tại để tải dữ liệu của phòng!');
+
+                        enterRemoteScope(); // Khóa ngữ cảnh để việc xóa cục bộ không bị gửi ngược lên phòng
+                        try {
+                            // 1. Xóa toàn bộ Sprite hiện có (trừ Sân khấu)
+                            const localSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
+                            for (const sp of localSprites) {
+                                Scratch.vm.deleteSprite(sp.id);
+                            }
+                            // 2. Làm sạch khối lệnh và ghi chú cũ của Sân khấu
+                            const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
+                            if (stageTarget && stageTarget.blocks) {
+                                stageTarget.blocks._blocks = {};
+                                stageTarget.blocks._scripts = [];
+                                stageTarget.blocks._comments = {};
+                                if (typeof stageTarget.blocks.resetCache === 'function') stageTarget.blocks.resetCache();
+                            }
+                        } finally {
+                            exitRemoteScope();
+                        }
+
+                        // Yêu cầu các thành viên đang online gửi cấu trúc nhân vật sang
+                        room.broadcastEvent({ type: 'REQUEST_ROOM_FULL_SYNC' });
+                        await new Promise(res => setTimeout(res, 250));
+                    }
+
+                    updateLoadingProgress('Tải dữ liệu dự án...', 'Đang nạp cấu trúc khối lệnh...', 75);
                     
                     enterRemoteScope();
                     try {
@@ -1770,7 +1849,7 @@
                         hideLoadingScreen();
                     }, 400);
 
-                    console.log("[Collab ✅] SẴN SÀNG: Màn hình loading và cơ chế chống lặp sprite đã hoạt động!");
+                    console.log("[Collab ✅] SẴN SÀNG: Màn hình loading, tự xóa dự án cũ và chặn file > 5MB đã hoạt động!");
                 }).catch(err => {
                     console.error("[Collab] Lỗi tải storage ban đầu:", err);
                     hideLoadingScreen();
