@@ -68,9 +68,10 @@
         return !!(paintEditor && paintEditor.offsetParent !== null && paintEditor.getBoundingClientRect().width > 0);
     }
 
-    // THANH TRẠNG THÁI TRÊN NAVIGATION BAR (PHONG CÁCH TURBOWARP ĐỒNG BỘ)
+    const DANV_LOGO_URL = 'https://github.com/danvPR/workshop/blob/main/Assets/Logo-Vi.png?raw=true';
+
+    // THANH ĐIỀU KHIỂN TRÊN NAVIGATION BAR (TỰ ĐỘNG HIỂN THỊ NÚT BẤM KẾT NỐI / THOÁT)
     function updateNavBarBadge(roomId, onlineCount = 1) {
-        if (!roomId) return;
         const navBar = document.querySelector('[class*="menu-bar_account-info-group"]') ||
                        document.querySelector('[class*="menu-bar_main-menu"]');
         if (!navBar) return;
@@ -81,6 +82,28 @@
             navBar.prepend(navBarBadgeEl);
         }
 
+        // Trường hợp 1: Chưa kết nối phòng -> Hiển thị nút bấm "Kết nối"
+        if (!roomId) {
+            navBarBadgeEl.style.cssText = `
+                display: inline-flex; align-items: center; gap: 6px;
+                background: #4C97FF; padding: 4px 12px; border-radius: 5px; color: #ffffff;
+                font-size: 12px; font-weight: 600; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                cursor: pointer; user-select: none; margin: 0 6px; transition: background 0.15s ease;
+            `;
+            navBarBadgeEl.title = 'Bấm để kết nối phòng cộng tác';
+            navBarBadgeEl.innerHTML = `
+                <img src="${DANV_LOGO_URL}" style="height: 14px; width: auto; object-fit: contain;" />
+                <span>Kết nối phòng</span>
+            `;
+            navBarBadgeEl.onmouseenter = () => { navBarBadgeEl.style.background = '#3373CC'; };
+            navBarBadgeEl.onmouseleave = () => { navBarBadgeEl.style.background = '#4C97FF'; };
+            navBarBadgeEl.onclick = () => {
+                if (window.collabInstance) window.collabInstance.openModalBlock();
+            };
+            return;
+        }
+
+        // Trường hợp 2: Đã kết nối -> Hiển thị thông tin phòng, Chat và nút Thoát
         navBarBadgeEl.style.cssText = `
             display: inline-flex; align-items: center; gap: 8px;
             background: hsla(215, 100%, 65%, 0.15);
@@ -131,7 +154,7 @@
         }
     }
 
-    // MODAL HỎI ID PHÒNG (GIAO DIỆN TURBOWARP CHUẨN MỰC)
+    // MODAL HỎI ID PHÒNG CÓ LOGO DANVWORKSHOP
     function openCollabJoinModal(defaultRoomId = 'phong-test-1') {
         return new Promise((resolve) => {
             const oldModal = document.getElementById('collab-modal-overlay');
@@ -152,7 +175,10 @@
                     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4); color: #fff;
                 ">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
-                        <span style="font-size: 15px; font-weight: 600; color: #fff;">Kết nối phòng cộng tác</span>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <img src="${DANV_LOGO_URL}" style="height: 22px; width: auto; object-fit: contain;" alt="DANV" />
+                            <span style="font-size: 15px; font-weight: 600; color: #fff;">DANV Collab</span>
+                        </div>
                         <div id="collab-modal-close" style="cursor:pointer; color:#858ca0;">${ICONS.close}</div>
                     </div>
 
@@ -375,10 +401,8 @@
         room = null;
         currentRoomId = null;
 
-        if (navBarBadgeEl) {
-            navBarBadgeEl.remove();
-            navBarBadgeEl = null;
-        }
+        // Đưa nút trên Navigation Bar trở về trạng thái "Kết nối phòng"
+        updateNavBarBadge(null);
 
         destroyChatUI();
 
@@ -1191,41 +1215,31 @@
     }
 
     class LiveblocksCollab {
-        getInfo() {
-            // Icon mạng cộng tác vector SVG nhúng trực tiếp chuẩn TurboWarp
-            const COLLAB_ICON = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>';
+        constructor() {
+            window.collabInstance = this;
+            // Tự động gắn nút "Kết nối phòng" lên thanh Navigation bar khi khởi tạo
+            setTimeout(() => { updateNavBarBadge(null); }, 600);
+        }
 
+        getInfo() {
             return {
                 id: 'liveblockscollab',
-                name: 'Live Collab Pro',
-                menuIconURI: COLLAB_ICON,
-                blockIconURI: COLLAB_ICON,
+                name: 'DANV Collab',
+                menuIconURI: DANV_LOGO_URL,
+                blockIconURI: DANV_LOGO_URL,
                 color1: '#4C97FF',
                 color2: '#3373CC',
                 color3: '#285bab',
                 blocks: [
                     {
-                        opcode: 'openModalBlock',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'Kết nối phòng'
+                        blockType: Scratch.BlockType.BUTTON,
+                        text: 'Kết nối phòng',
+                        func: 'openModalBlock'
                     },
                     {
-                        opcode: 'leaveRoomBlock',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'Thoát phòng'
-                    },
-                    {
-                        opcode: 'toggleChatBlock',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'Mở / Đóng cửa sổ Chat'
-                    },
-                    {
-                        opcode: 'sendChatBlock',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'Gửi tin nhắn [MESSAGE]',
-                        arguments: {
-                            MESSAGE: { type: Scratch.ArgumentType.STRING, defaultValue: 'Xin chào!' }
-                        }
+                        blockType: Scratch.BlockType.BUTTON,
+                        text: 'Thoát phòng',
+                        func: 'leaveRoomBlock'
                     }
                 ]
             };
@@ -1243,22 +1257,11 @@
         }
 
         leaveRoomBlock() {
-            leaveCollabRoom();
-        }
-
-        toggleChatBlock() {
             if (!room) {
-                alert('Vui lòng kết nối vào phòng trước khi mở Chat!');
+                alert('Bạn hiện chưa tham gia phòng nào!');
                 return;
             }
-            toggleChatUI();
-        }
-
-        sendChatBlock(args) {
-            const msg = (args.MESSAGE || '').toString().trim();
-            if (msg && room) {
-                broadcastChatMessage(msg);
-            }
+            leaveCollabRoom();
         }
 
         startRoomConnection(roomId, userName) {
