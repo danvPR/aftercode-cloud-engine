@@ -116,11 +116,11 @@
     // TẤM MÀN CHẮN CHẶN CỨNG B KHÔNG CHO BẤM CHUỘT / VẼ VÀO PAINT EDITOR
     let paintCurtainEl = null;
     function updateDOMCostumeCurtain(isLocked, editorName) {
+        // Chỉ chọn chính xác khung vẽ Paint Editor, TUYỆT ĐỐI không lấy nhầm sang Code workspace
         const paintEditor = document.querySelector('[class*="paint-editor_paint-editor"]') 
-                         || document.querySelector('[class*="paint-editor_canvas-container"]')
-                         || document.querySelector('[class*="asset-panel_detail-area"]');
+                         || document.querySelector('[class*="paint-editor_canvas-container"]');
 
-        if (!isLocked || !paintEditor) {
+        if (!isLocked || !paintEditor || paintEditor.offsetParent === null) {
             if (paintCurtainEl) paintCurtainEl.style.display = 'none';
             return;
         }
@@ -128,28 +128,40 @@
         if (!paintCurtainEl) {
             paintCurtainEl = document.createElement('div');
             paintCurtainEl.id = 'collab-paint-curtain';
-            paintCurtainEl.style.cssText = `
-                position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px);
-                z-index: 99999; display: flex; flex-direction: column;
-                align-items: center; justify-content: center; color: white;
-                cursor: not-allowed; pointer-events: all; user-select: none;
-                font-family: sans-serif;
-            `;
             document.body.appendChild(paintCurtainEl);
         }
 
         const rect = paintEditor.getBoundingClientRect();
-        paintCurtainEl.style.top = rect.top + 'px';
-        paintCurtainEl.style.left = rect.left + 'px';
-        paintCurtainEl.style.width = rect.width + 'px';
-        paintCurtainEl.style.height = rect.height + 'px';
-        paintCurtainEl.style.display = 'flex';
+        if (rect.width === 0 || rect.height === 0) {
+            paintCurtainEl.style.display = 'none';
+            return;
+        }
+
+        paintCurtainEl.style.cssText = `
+            position: fixed;
+            top: ${rect.top}px;
+            left: ${rect.left}px;
+            width: ${rect.width}px;
+            height: ${rect.height}px;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(2px);
+            z-index: 99999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            cursor: not-allowed;
+            pointer-events: all;
+            user-select: none;
+            font-family: sans-serif;
+        `;
+
         paintCurtainEl.innerHTML = `
             <div style="background: rgba(18, 18, 24, 0.95); padding: 16px 24px; border-radius: 12px; border: 2px solid #ff3344; box-shadow: 0 10px 30px rgba(0,0,0,0.6); text-align: center; pointer-events: none;">
-                <div style="font-size: 20px; font-weight: bold; margin-bottom: 8px;">🔒 CHẾ ĐỘ XEM TRỰC TIẾP</div>
+                <div style="font-size: 18px; font-weight: bold; margin-bottom: 8px;">🔒 ĐANG BỊ KHÓA VẼ</div>
                 <div style="font-size: 14px; color: #ff9999;">${editorName} đang chỉnh sửa trang phục này!</div>
-                <div style="font-size: 12px; color: #88ccff; margin-top: 6px;">⏳ Đang tự động nhận hình ảnh trực tiếp mỗi 5 giây...</div>
+                <div style="font-size: 12px; color: #88ccff; margin-top: 6px;">⏳ Bản vẽ sẽ tự động cập nhật ngay lập tức...</div>
             </div>
         `;
     }
@@ -408,7 +420,7 @@
             }
         }
 
-        return {
+        const costumeObj = {
             name: costumeData.name,
             dataFormat: costumeData.dataFormat,
             asset: asset,
@@ -416,8 +428,28 @@
             md5: costumeData.md5ext || `${costumeData.assetId}.${costumeData.dataFormat}`,
             rotationCenterX: costumeData.rotationCenterX,
             rotationCenterY: costumeData.rotationCenterY,
-            bitmapResolution: costumeData.bitmapResolution || 1
+            bitmapResolution: costumeData.bitmapResolution || 1,
+            size: [0, 0] // Mặc định để chống lỗi Cannot read properties of undefined (reading 'size')
         };
+
+        // Đăng ký Skin mới với WebGL Renderer để nhân vật hiển thị lại trên sân khấu
+        const renderer = Scratch.vm.runtime.renderer;
+        if (renderer && asset) {
+            try {
+                const rotationCenter = [costumeObj.rotationCenterX, costumeObj.rotationCenterY];
+                if (costumeObj.dataFormat === 'svg') {
+                    costumeObj.skinId = renderer.createSVGSkin(asset.decodeText(), rotationCenter);
+                } else {
+                    costumeObj.skinId = renderer.createBitmapSkin(asset.data, costumeObj.bitmapResolution, rotationCenter);
+                }
+                const skinSize = renderer.getSkinSize(costumeObj.skinId);
+                costumeObj.size = [skinSize[0], skinSize[1]];
+            } catch (err) {
+                console.warn("[Collab] Chưa thể tạo WebGL Skin ngay:", err);
+            }
+        }
+
+        return costumeObj;
     }
 
     // --- 🎭 HOOK VÀO THUỘC TÍNH NHÂN VẬT & QUẢN LÝ TRANG PHỤC ---
@@ -556,68 +588,64 @@
             };
         }
 
-        // 8. Đồng bộ Vẽ Vector SVG (Chỉ cho phép vẽ nếu không có ai khác đang giữ khóa)
-        if (targetProto.updateSvg) {
-            const originalUpdateSvg = targetProto.updateSvg;
-            targetProto.updateSvg = function(costumeIndex, svg, rotationCenterX, rotationCenterY) {
-                const syncKey = getSyncKey(this);
-                if (!isApplyingRemote) {
-                    const editor = getOtherCostumeEditor(syncKey, costumeIndex);
-                    if (editor) {
-                        showCostumeLock(`🔒 ${editor.userName} đang vẽ trang phục này. Bạn chỉ đang xem trực tiếp!`);
-                        return; // Chặn máy này không cho ghi đè
-                    }
-                    acquireCostumeLock(syncKey, costumeIndex);
+        // 8. Đồng bộ Vẽ Vector SVG (Hook vào Scratch.vm thay vì targetProto)
+        const originalVMUpdateSvg = Scratch.vm.updateSvg;
+        Scratch.vm.updateSvg = function(costumeIndex, svg, rotationCenterX, rotationCenterY) {
+            const target = Scratch.vm.editingTarget;
+            const syncKey = target ? getSyncKey(target) : null;
+            if (!isApplyingRemote && syncKey) {
+                const editor = getOtherCostumeEditor(syncKey, costumeIndex);
+                if (editor) {
+                    showCostumeLock(`🔒 ${editor.userName} đang vẽ trang phục này!`);
+                    return;
                 }
+                acquireCostumeLock(syncKey, costumeIndex);
+            }
 
-                const isLocal = !isApplyingRemote;
-                const result = originalUpdateSvg.call(this, costumeIndex, svg, rotationCenterX, rotationCenterY);
-                if (isLocal && room && this.isOriginal) {
-                    sendChunkedPayload('SYNC_UPDATE_SVG', syncKey, {
-                        costumeIndex, svg, rotationCenterX, rotationCenterY
+            const result = originalVMUpdateSvg.call(this, costumeIndex, svg, rotationCenterX, rotationCenterY);
+            if (!isApplyingRemote && room && syncKey) {
+                sendChunkedPayload('SYNC_UPDATE_SVG', syncKey, {
+                    costumeIndex, svg, rotationCenterX, rotationCenterY
+                });
+            }
+            return result;
+        };
+
+        // 9. Đồng bộ Vẽ Bitmap Pixel (Hook vào Scratch.vm thay vì targetProto)
+        const originalVMUpdateBitmap = Scratch.vm.updateBitmap;
+        Scratch.vm.updateBitmap = function(costumeIndex, bitmap, rotationCenterX, rotationCenterY) {
+            const target = Scratch.vm.editingTarget;
+            const syncKey = target ? getSyncKey(target) : null;
+            if (!isApplyingRemote && syncKey) {
+                const editor = getOtherCostumeEditor(syncKey, costumeIndex);
+                if (editor) {
+                    showCostumeLock(`🔒 ${editor.userName} đang vẽ trang phục này!`);
+                    return;
+                }
+                acquireCostumeLock(syncKey, costumeIndex);
+            }
+
+            const result = originalVMUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY);
+            if (!isApplyingRemote && room && syncKey) {
+                let dataURI = null;
+                if (bitmap instanceof HTMLCanvasElement) {
+                    dataURI = bitmap.toDataURL('image/png');
+                } else if (bitmap && bitmap.data) {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.putImageData(bitmap, 0, 0);
+                    dataURI = canvas.toDataURL('image/png');
+                }
+                if (dataURI) {
+                    sendChunkedPayload('SYNC_UPDATE_BITMAP', syncKey, {
+                        costumeIndex, dataURI, rotationCenterX, rotationCenterY
                     });
                 }
-                return result;
-            };
-        }
-
-        // 9. Đồng bộ Vẽ Bitmap Pixel (Chỉ cho phép vẽ nếu không có ai khác đang giữ khóa)
-        if (targetProto.updateBitmap) {
-            const originalUpdateBitmap = targetProto.updateBitmap;
-            targetProto.updateBitmap = function(costumeIndex, bitmap, rotationCenterX, rotationCenterY) {
-                const syncKey = getSyncKey(this);
-                if (!isApplyingRemote) {
-                    const editor = getOtherCostumeEditor(syncKey, costumeIndex);
-                    if (editor) {
-                        showCostumeLock(`🔒 ${editor.userName} đang vẽ trang phục này. Bạn chỉ đang xem trực tiếp!`);
-                        return; // Chặn máy này không cho ghi đè
-                    }
-                    acquireCostumeLock(syncKey, costumeIndex);
-                }
-
-                const isLocal = !isApplyingRemote;
-                const result = originalUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY);
-                if (isLocal && room && this.isOriginal) {
-                    let dataURI = null;
-                    if (bitmap instanceof HTMLCanvasElement) {
-                        dataURI = bitmap.toDataURL('image/png');
-                    } else if (bitmap && bitmap.data) {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = bitmap.width;
-                        canvas.height = bitmap.height;
-                        const ctx = canvas.getContext('2d');
-                        ctx.putImageData(bitmap, 0, 0);
-                        dataURI = canvas.toDataURL('image/png');
-                    }
-                    if (dataURI) {
-                        sendChunkedPayload('SYNC_UPDATE_BITMAP', syncKey, {
-                            costumeIndex, dataURI, rotationCenterX, rotationCenterY
-                        });
-                    }
-                }
-                return result;
-            };
-        }
+            }
+            return result;
+        };
 
         // 10. Đổi tên nhân vật
         const originalRenameSprite = Scratch.vm.renameSprite;
@@ -1025,9 +1053,23 @@
                                             (async () => {
                                                 try {
                                                     const costumeObj = await deserializeCostume(data.costumeData);
-                                                    if (costumeObj && target.sprite && target.sprite.costumes[data.costumeIndex]) {
+                                                    const currentCostume = target.sprite && target.sprite.costumes[data.costumeIndex];
+                                                    if (costumeObj && currentCostume) {
+                                                        // Giữ lại skinId cũ nếu có để tránh crash
+                                                        if (!costumeObj.skinId && currentCostume.skinId) {
+                                                            costumeObj.skinId = currentCostume.skinId;
+                                                        }
+                                                        if (!costumeObj.size && currentCostume.size) {
+                                                            costumeObj.size = currentCostume.size;
+                                                        }
+
                                                         target.sprite.costumes[data.costumeIndex] = costumeObj;
-                                                        // Nạp lại hiển thị cho bàn vẽ và sân khấu của máy xem
+
+                                                        // Cập nhật lại hình trên sân khấu
+                                                        if (target.renderer && costumeObj.skinId) {
+                                                            target.updateAllDrawableProperties();
+                                                        }
+
                                                         if (target.currentCostume === data.costumeIndex) {
                                                             target.setCostume(data.costumeIndex);
                                                         }
