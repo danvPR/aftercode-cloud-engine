@@ -302,7 +302,52 @@
                 font-size: 12px; font-weight: 600; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
                 cursor: pointer; user-select: none; margin: 0 6px; transition: background 0.15s ease;
             `;
-            navBarBadgeEl.title =
+            navBarBadgeEl.title = 'Nhấn để kết nối phòng cộng tác';
+            navBarBadgeEl.innerHTML = `<span>Kết nối phòng</span>`;
+            navBarBadgeEl.onclick = () => {
+                if (window.collabInstance) window.collabInstance.openModalBlock();
+            };
+            return;
+        }
+
+        // Trường hợp 2: Đang kết nối trong phòng
+        navBarBadgeEl.style.cssText = `
+            display: inline-flex; align-items: center; gap: 8px;
+            background: #252839; border: 1px solid rgba(255,255,255,0.15);
+            padding: 3px 10px; border-radius: 5px; color: #ffffff;
+            font-size: 12px; font-weight: 500; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            user-select: none; margin: 0 6px;
+        `;
+        navBarBadgeEl.title = `Phòng: ${roomId}`;
+        navBarBadgeEl.innerHTML = `
+            <span id="collab-badge-users-btn" style="display:inline-flex; align-items:center; gap:5px; cursor:pointer; color:#2fd67c; font-weight:600;" title="Danh sách thành viên">
+                ${ICONS.users} <span>${onlineCount}</span>
+            </span>
+            <span style="color:rgba(255,255,255,0.2);">|</span>
+            <span id="collab-badge-leave-btn" style="display:inline-flex; align-items:center; cursor:pointer; color:#ff4d4f;" title="Rời khỏi phòng">
+                ${ICONS.exit}
+            </span>
+        `;
+        navBarBadgeEl.onclick = null;
+
+        const usersBtn = navBarBadgeEl.querySelector('#collab-badge-users-btn');
+        if (usersBtn) {
+            usersBtn.onclick = (e) => {
+                e.stopPropagation();
+                toggleUsersListUI();
+            };
+        }
+
+        const leaveBtn = navBarBadgeEl.querySelector('#collab-badge-leave-btn');
+        if (leaveBtn) {
+            leaveBtn.onclick = (e) => {
+                e.stopPropagation();
+                if (confirm('Bạn có chắc chắn muốn rời khỏi phòng không?')) {
+                    leaveCollabRoom();
+                }
+            };
+        }
+    }
 
     // MODAL HỎI ID PHÒNG CÓ LOGO DANVWORKSHOP
     function openCollabJoinModal(defaultRoomId = 'phong-test-1') {
