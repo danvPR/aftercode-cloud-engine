@@ -26,24 +26,30 @@
     const localBackups = new Map(); // Lưu snapshot dự phòng: spriteKey -> { blocks, comments, time }
     const spriteVersions = new Map(); // Theo dõi phiên bản: spriteKey -> versionNumber
     let activeCostumeLockTimeout = null;
+    let liveCostumeSyncInterval = null; // Bộ lặp gửi hình ảnh mỗi 5s
+    let lastSentCostumeDataURI = null; // Tránh gửi trùng lặp nếu chưa vẽ gì mới
 
     // Kiểm tra xem trang phục có đang bị người khác khóa chỉnh sửa hay không
     function getOtherCostumeEditor(spriteKey, costumeIndex) {
         if (!room) return null;
         const others = room.getOthers();
+        const now = Date.now();
         for (const user of others) {
             const lock = user.presence?.editingCostume;
-            if (lock && lock.spriteKey === spriteKey && (lock.costumeIndex === undefined || lock.costumeIndex === costumeIndex)) {
-                return {
-                    connectionId: user.connectionId,
-                    userName: user.presence?.name || `User #${user.connectionId}`
-                };
+            // Khóa hợp lệ nếu còn hạn dưới 10 giây
+            if (lock && lock.spriteKey === spriteKey && (now - lock.timestamp < 10000)) {
+                if (lock.costumeIndex === undefined || lock.costumeIndex === costumeIndex) {
+                    return {
+                        connectionId: user.connectionId,
+                        userName: user.presence?.name || `Người dùng #${user.connectionId}`
+                    };
+                }
             }
         }
         return null;
     }
 
-    // Chiếm giữ quyền sửa trang phục (Lock Lease)
+    // Chiếm giữ quyền sửa trang phục & kích hoạt đồng bộ 5s cho người khác xem
     function acquireCostumeLock(spriteKey, costumeIndex) {
         if (!room) return;
         room.updatePresence({
@@ -54,14 +60,101 @@
             }
         });
 
+        // Kích hoạt bộ đếm tự động gửi hình ảnh mỗi 5 giây cho người khác
+        if (!liveCostumeSyncInterval) {
+            liveCostumeSyncInterval = setInterval(() => {
+                sendLiveCostumeSync();
+            }, 5000);
+        }
+
         if (activeCostumeLockTimeout) clearTimeout(activeCostumeLockTimeout);
-        // Tự động nhả khóa sau 2.5 giây nếu không còn thao tác vẽ tiếp
+        // Tự động nhả khóa nếu không còn thao tác vẽ trong 8 giây
         activeCostumeLockTimeout = setTimeout(() => {
-            if (room) room.updatePresence({ editingCostume: null });
-        }, 2500);
+            releaseCostumeLock();
+        }, 8000);
     }
 
-    // Giao diện thông báo trạng thái tải / khóa chỉnh sửa (Lazyload Notification)
+    // Nhả quyền chỉnh sửa trang phục
+    function releaseCostumeLock() {
+        if (liveCostumeSyncInterval) {
+            clearInterval(liveCostumeSyncInterval);
+            liveCostumeSyncInterval = null;
+        }
+        if (activeCostumeLockTimeout) {
+            clearTimeout(activeCostumeLockTimeout);
+            activeCostumeLockTimeout = null;
+        }
+        lastSentCostumeDataURI = null;
+        if (room) {
+            room.updatePresence({ editingCostume: null });
+        }
+    }
+
+    // Hàm gửi dữ liệu hình ảnh hiện tại mỗi 5 giây
+    function sendLiveCostumeSync() {
+        if (!room || isApplyingRemote) return;
+        const target = Scratch.vm.editingTarget;
+        if (!target || !target.sprite) return;
+        const costumeIndex = target.currentCostume;
+        const costume = target.sprite.costumes[costumeIndex];
+        if (!costume) return;
+
+        try {
+            const costumeData = serializeCostume(costume);
+            if (costumeData && costumeData.dataURI && costumeData.dataURI !== lastSentCostumeDataURI) {
+                lastSentCostumeDataURI = costumeData.dataURI;
+                sendChunkedPayload('SYNC_LIVE_COSTUME_PREVIEW', getSyncKey(target), {
+                    costumeIndex: costumeIndex,
+                    costumeData: costumeData
+                });
+            }
+        } catch (e) {
+            console.error("[Collab] Lỗi đồng bộ live costume 5s:", e);
+        }
+    }
+
+    // TẤM MÀN CHẮN CHẶN CỨNG B KHÔNG CHO BẤM CHUỘT / VẼ VÀO PAINT EDITOR
+    let paintCurtainEl = null;
+    function updateDOMCostumeCurtain(isLocked, editorName) {
+        const paintEditor = document.querySelector('[class*="paint-editor_paint-editor"]') 
+                         || document.querySelector('[class*="paint-editor_canvas-container"]')
+                         || document.querySelector('[class*="asset-panel_detail-area"]');
+
+        if (!isLocked || !paintEditor) {
+            if (paintCurtainEl) paintCurtainEl.style.display = 'none';
+            return;
+        }
+
+        if (!paintCurtainEl) {
+            paintCurtainEl = document.createElement('div');
+            paintCurtainEl.id = 'collab-paint-curtain';
+            paintCurtainEl.style.cssText = `
+                position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px);
+                z-index: 99999; display: flex; flex-direction: column;
+                align-items: center; justify-content: center; color: white;
+                cursor: not-allowed; pointer-events: all; user-select: none;
+                font-family: sans-serif;
+            `;
+            document.body.appendChild(paintCurtainEl);
+        }
+
+        const rect = paintEditor.getBoundingClientRect();
+        paintCurtainEl.style.top = rect.top + 'px';
+        paintCurtainEl.style.left = rect.left + 'px';
+        paintCurtainEl.style.width = rect.width + 'px';
+        paintCurtainEl.style.height = rect.height + 'px';
+        paintCurtainEl.style.display = 'flex';
+        paintCurtainEl.innerHTML = `
+            <div style="background: rgba(18, 18, 24, 0.95); padding: 16px 24px; border-radius: 12px; border: 2px solid #ff3344; box-shadow: 0 10px 30px rgba(0,0,0,0.6); text-align: center; pointer-events: none;">
+                <div style="font-size: 20px; font-weight: bold; margin-bottom: 8px;">🔒 CHẾ ĐỘ XEM TRỰC TIẾP</div>
+                <div style="font-size: 14px; color: #ff9999;">${editorName} đang chỉnh sửa trang phục này!</div>
+                <div style="font-size: 12px; color: #88ccff; margin-top: 6px;">⏳ Đang tự động nhận hình ảnh trực tiếp mỗi 5 giây...</div>
+            </div>
+        `;
+    }
+
+    // Giao diện thông báo nhỏ góc màn hình
     let lockOverlay = null;
     function showCostumeLock(message) {
         if (!lockOverlay) {
@@ -87,6 +180,40 @@
             lockOverlay.style.opacity = '0';
             lockOverlay.style.transform = 'translateY(10px)';
         }
+    }
+
+    // Bắt sự kiện người dùng click vào khu vực vẽ để chiếm quyền hoặc chặn nếu bị khóa
+    function setupCostumeInteractionListeners() {
+        const handleInteraction = (e) => {
+            if (!room || isApplyingRemote) return;
+            const target = Scratch.vm.editingTarget;
+            if (!target) return;
+
+            // Kiểm tra click có nằm trong tab trang phục hay Paint Editor không
+            const inPaintArea = e.target.closest && (
+                e.target.closest('[class*="paint-editor_"]') || 
+                e.target.closest('[class*="asset-panel_"]')
+            );
+            if (!inPaintArea) return;
+
+            const syncKey = getSyncKey(target);
+            const costumeIndex = target.currentCostume;
+
+            const otherEditor = getOtherCostumeEditor(syncKey, costumeIndex);
+            if (otherEditor) {
+                // Người khác đang vẽ: Chặn ngay lập tức
+                e.stopPropagation();
+                e.preventDefault();
+                updateDOMCostumeCurtain(true, otherEditor.userName);
+                return;
+            }
+
+            // Nếu chưa ai vẽ: Chiếm quyền khóa và tự động kích hoạt gửi mỗi 5s
+            acquireCostumeLock(syncKey, costumeIndex);
+        };
+
+        window.addEventListener('pointerdown', handleInteraction, true);
+        window.addEventListener('keydown', handleInteraction, true);
     }
 
     // Hàm chia nhỏ dữ liệu và truyền dần dần (Chunking Sender)
@@ -688,6 +815,7 @@
             setupDOM();
             setupVMHooks();
             setupSpriteHooks();
+            setupCostumeInteractionListeners();
 
             try {
                 const response = client.enterRoom(roomId, {
@@ -708,10 +836,12 @@
                     const others = room.getOthers();
                     const activeIds = new Set();
                     let someoneEditingCurrentCostume = false;
+                    let currentEditorName = "Người dùng khác";
 
                     const currentEditingTarget = Scratch.vm.editingTarget;
                     const currentSyncKey = currentEditingTarget ? getSyncKey(currentEditingTarget) : null;
                     const currentCostumeIdx = currentEditingTarget ? currentEditingTarget.currentCostume : -1;
+                    const now = Date.now();
 
                     others.forEach(user => {
                         const p = user.presence;
@@ -728,17 +858,23 @@
                             el.style.left = p.cursor.x + 'px'; el.style.top = p.cursor.y + 'px';
                         }
 
-                        // KIỂM TRA XEM CÓ AI ĐANG SỬA TRANG PHỤC NÀY KHÔNG
-                        if (p && p.editingCostume && currentSyncKey && p.editingCostume.spriteKey === currentSyncKey) {
-                            if (p.editingCostume.costumeIndex === undefined || p.editingCostume.costumeIndex === currentCostumeIdx) {
-                                someoneEditingCurrentCostume = true;
-                                showCostumeLock(`👁️ Đang xem trực tiếp: Người dùng khác đang vẽ [${currentSyncKey}]!`);
+                        // KIỂM TRA XEM CÓ AI ĐANG SỬA TRANG PHỤC NÀY KHÔNG (Có hạn trong vòng 10 giây)
+                        if (p && p.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
+                            if (currentSyncKey && p.editingCostume.spriteKey === currentSyncKey) {
+                                if (p.editingCostume.costumeIndex === undefined || p.editingCostume.costumeIndex === currentCostumeIdx) {
+                                    someoneEditingCurrentCostume = true;
+                                    currentEditorName = p.name || `Người dùng #${user.connectionId}`;
+                                }
                             }
                         }
                     });
 
-                    // Nếu không còn ai vẽ nữa thì tự động tắt thông báo khóa
-                    if (!someoneEditingCurrentCostume && !isCostumeLocked) {
+                    // CẬP NHẬT MÀN CHẮN KHÓA DOM TRÊN GIAO DIỆN CỦA B
+                    updateDOMCostumeCurtain(someoneEditingCurrentCostume, currentEditorName);
+
+                    if (someoneEditingCurrentCostume) {
+                        showCostumeLock(`👁️ Đang xem trực tiếp: ${currentEditorName} đang vẽ trang phục này!`);
+                    } else if (!isCostumeLocked) {
                         hideCostumeLock();
                     }
 
@@ -882,6 +1018,27 @@
                                                 setTimeout(() => { isApplyingRemote = false; }, 50);
                                             };
                                             img.src = data.dataURI;
+                                        }
+
+                                        // 3.5. Nhận bản xem trực tiếp mỗi 5s khi người khác đang vẽ (LIVE SPECTATE)
+                                        if (session.action === 'SYNC_LIVE_COSTUME_PREVIEW') {
+                                            (async () => {
+                                                try {
+                                                    const costumeObj = await deserializeCostume(data.costumeData);
+                                                    if (costumeObj && target.sprite && target.sprite.costumes[data.costumeIndex]) {
+                                                        target.sprite.costumes[data.costumeIndex] = costumeObj;
+                                                        // Nạp lại hiển thị cho bàn vẽ và sân khấu của máy xem
+                                                        if (target.currentCostume === data.costumeIndex) {
+                                                            target.setCostume(data.costumeIndex);
+                                                        }
+                                                        Scratch.vm.emitTargetsUpdate();
+                                                    }
+                                                } catch (err) {
+                                                    console.error("[Collab] Lỗi áp dụng live preview 5s:", err);
+                                                } finally {
+                                                    setTimeout(() => { isApplyingRemote = false; }, 50);
+                                                }
+                                            })();
                                         }
                                     }
 
