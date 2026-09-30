@@ -197,7 +197,21 @@
                         stageTarget.setCostume(snapshot.stage.currentCostume);
                     }
                     if (snapshot.stage.variables) {
-                        stageTarget.variables = Object.assign({}, snapshot.stage.variables);
+                        for (const varId in snapshot.stage.variables) {
+                            const vData = snapshot.stage.variables[varId];
+                            
+                            // Nếu biến chưa tồn tại, yêu cầu VM tạo mới (để kế thừa hàm toXML)
+                            if (!stageTarget.variables[varId] && typeof stageTarget.createVariable === 'function') {
+                                stageTarget.createVariable(vData.id, vData.name, vData.type, vData.isCloud);
+                            }
+                            
+                            // Cập nhật giá trị một cách an toàn mà không làm mất prototype của VM
+                            if (stageTarget.variables[varId]) {
+                                stageTarget.variables[varId].name = vData.name;
+                                stageTarget.variables[varId].value = vData.value;
+                                if (vData.isCloud !== undefined) stageTarget.variables[varId].isCloud = vData.isCloud;
+                            }
+                        }
                     }
                     if (snapshot.stage.blocks) {
                         applyBlocksToTarget(stageTarget, {
