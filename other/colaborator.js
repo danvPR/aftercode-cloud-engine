@@ -48,6 +48,11 @@
     let lastSentCostumeDataURI = null;
     let loadingOverlayEl = null;
 
+    // QUẢN LÝ ĐỒNG BỘ TỨC THÌ & CHỐNG LỆCH DỮ LIỆU (3 GIÂY)
+    let lastKnownProjectTimestamp = 0;
+    let desyncCheckInterval = null;
+    let isAutoSyncing = false;
+
     const DANV_LOGO_URL = 'https://github.com/danvPR/workshop/blob/main/Assets/Logo-Vi.png?raw=true';
 
     // BỘ ICON VECTOR TURBOWARP
@@ -171,19 +176,19 @@
         }
     }
 
-    function scheduleCloudflareSave(delay = 1500, broadcastAfter = false, syncAssets = false) {
+    function scheduleCloudflareSave(delay = 1000, broadcastAfter = false, syncAssets = false) {
         if (!currentRoomId || isRemoteActive()) return;
         if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
         
         cloudflareSaveTimer = setTimeout(async () => {
             try {
-                // Luôn kiểm tra và đẩy mọi asset mới/thay đổi lên R2 (đã có uploadedR2Assets kiểm soát chống spam)
                 for (const t of Scratch.vm.runtime.targets) {
                     await syncTargetAssetsToR2(t);
                 }
                 
-                // Tải snapshot dự án lên Cloudflare Durable Object
                 const snapshot = packCurrentProject();
+                lastKnownProjectTimestamp = snapshot.timestamp; // Cập nhật mốc thời gian máy cục bộ
+
                 const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -192,14 +197,50 @@
 
                 if (res.ok) {
                     console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ dự án.");
+                    cloudflareSaveTimer = null;
                     if (broadcastAfter && room) {
-                        room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
+                        room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH', timestamp: snapshot.timestamp });
                     }
                 }
             } catch (e) {
                 console.error("[DANV Workspace ❌] Lỗi kết nối tới máy chủ lưu trữ:", e);
             }
         }, delay);
+    }
+
+    // TỰ ĐỘNG PHÁT HIỆN BẤT ĐỒNG BỘ VÀ SYNC TỨC THÌ (CHẠY ĐỊNH KỲ MỖI 3 GIÂY)
+    async function checkAndAutoSyncDesync() {
+        if (!currentRoomId || isRemoteActive() || isAutoSyncing || cloudflareSaveTimer !== null) return;
+        try {
+            const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`);
+            if (!res.ok) return;
+            const resJson = await res.json();
+            if (!resJson.exists || !resJson.data) return;
+
+            const remote = resJson.data;
+            const remoteTime = remote.timestamp || 0;
+            const localSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
+            const remoteSpritesCount = (remote.sprites || []).length;
+
+            // ĐIỀU KIỆN PHÁT HIỆN LỆCH DỮ LIỆU:
+            // 1. Máy chủ có bản sửa đổi mới hơn bản hiện tại của máy mình (remoteTime > lastKnownProjectTimestamp)
+            // 2. Số lượng nhân vật (sprites) giữa 2 bên không khớp nhau
+            const hasNewerCloudVersion = remoteTime > (lastKnownProjectTimestamp + 50);
+            const hasSpriteMismatch = localSprites.length !== remoteSpritesCount;
+
+            if (hasNewerCloudVersion || hasSpriteMismatch) {
+                console.log("[DANV Workspace ⚡] Phát hiện bất đồng bộ! Lập tức kích hoạt đồng bộ khẩn cấp...");
+                isAutoSyncing = true;
+                showCostumeLock('⚡ Đang tự động sửa lệch dữ liệu...');
+                await restoreProjectFromCloudflare(currentRoomId, true);
+                setTimeout(() => {
+                    if (!isCostumeLocked) hideCostumeLock();
+                    isAutoSyncing = false;
+                }, 800);
+            }
+        } catch (e) {
+            isAutoSyncing = false;
+        }
     }
 
     function packCurrentProject() {
@@ -253,6 +294,9 @@
             if (!resJson.exists || !resJson.data) return false;
 
             const snapshot = resJson.data;
+            if (snapshot.timestamp) {
+                lastKnownProjectTimestamp = Math.max(lastKnownProjectTimestamp, snapshot.timestamp);
+            }
             enterRemoteScope();
             try {
                 // 0. Nạp trước các tiện ích mở rộng an toàn để tránh bị biến thành khối đỏ (Red/Obsolete Blocks)
@@ -1047,6 +1091,7 @@
 
     function leaveCollabRoom() {
         if (!room) return;
+        if (desyncCheckInterval) { clearInterval(desyncCheckInterval); desyncCheckInterval = null; }
         document.removeEventListener('mousemove', onGlobalMouseMove);
         try {
             releaseCostumeLock();
@@ -1080,7 +1125,7 @@
         const now = Date.now();
         for (const user of others) {
             const lock = user.presence?.editingCostume;
-            if (lock && lock.spriteKey === spriteKey && (now - lock.timestamp < 10000)) {
+            if (lock && lock.spriteKey === spriteKey && (now - lock.timestamp < 4000)) {
                 if (lock.costumeIndex === undefined || lock.costumeIndex === costumeIndex) {
                     return {
                         connectionId: user.connectionId,
@@ -1098,7 +1143,7 @@
             editingCostume: { spriteKey: spriteKey, costumeIndex: costumeIndex, timestamp: Date.now() }
         });
         if (activeCostumeLockTimeout) clearTimeout(activeCostumeLockTimeout);
-        activeCostumeLockTimeout = setTimeout(() => releaseCostumeLock(), 8000);
+        activeCostumeLockTimeout = setTimeout(() => releaseCostumeLock(), 3500);
     }
 
     function releaseCostumeLock() {
@@ -1309,7 +1354,7 @@
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'size', value: this.size });
-                scheduleCloudflareSave(3000, false, false);
+                scheduleCloudflareSave(1200, false, false);
             }
         };
 
@@ -1319,7 +1364,7 @@
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'direction', value: this.direction });
-                scheduleCloudflareSave(3000, false, false);
+                scheduleCloudflareSave(1200, false, false);
             }
         };
 
@@ -1329,7 +1374,7 @@
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'costume', value: this.currentCostume });
-                scheduleCloudflareSave(3000, false, false);
+                scheduleCloudflareSave(1200, false, false);
             }
         };
 
@@ -1385,7 +1430,7 @@
                     const payloadString = JSON.stringify({ blocks: blocksRef, comments: commentsRef, version: newVersion });
                     if (sharedBlocks) sharedBlocks.set(syncKey, payloadString);
                     room.broadcastEvent({ type: 'INSTANT_BLOCK_SYNC', spriteKey: syncKey, data: payloadString });
-                    scheduleCloudflareSave(3000);
+                    scheduleCloudflareSave(1200);
                 }, 90));
             }
         };
@@ -1632,7 +1677,7 @@
                             el.style.top = posY + 'px';
                         }
 
-                        if (p && p.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
+                        if (p && p.editingCostume && (now - p.editingCostume.timestamp < 4000)) {
                             if (currentSyncKey && p.editingCostume.spriteKey === currentSyncKey) {
                                 if (p.editingCostume.costumeIndex === undefined || p.editingCostume.costumeIndex === currentCostumeIdx) {
                                     someoneEditingCurrentCostume = true;
@@ -1710,6 +1755,10 @@
                     sharedBlocks = storage.root.get("sharedBlocks");
                     updateLoadingProgress('Hoàn tất!', 'Dự án đã sẵn sàng cộng tác!', 100);
                     setTimeout(() => hideLoadingScreen(), 300);
+
+                    // KHỞI ĐỘNG VÒNG LẶP KIỂM TRA BẤT ĐỒNG BỘ ĐỊNH KỲ MỖI 3 GIÂY
+                    if (desyncCheckInterval) clearInterval(desyncCheckInterval);
+                    desyncCheckInterval = setInterval(checkAndAutoSyncDesync, 3000);
                 });
 
             } catch (err) {
