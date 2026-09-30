@@ -29,7 +29,7 @@ const Player = mongoose.model('Player', PlayerSchema);
 const CloudVarSchema = new mongoose.Schema({
   projectId: { type: String, default: "default_project" },
   username: { type: String, required: true },
-  key: { type: String, required: true },
+  key: { type: String, required: true, maxlength: 200 }, // Giới hạn cứng tối đa 200 ký tự cho Key
   value: { type: String, default: "" },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -94,6 +94,7 @@ app.post('/api/var/set', async (req, res) => {
   try {
     const { projectId = "default_project", username, key, value } = req.body;
     if (!username || !key) return res.status(400).json({ error: "Thiếu username hoặc key" });
+    if (String(key).length > 200) return res.status(400).json({ error: "Key không được vượt quá 200 ký tự" });
 
     const record = await CloudVar.findOneAndUpdate(
       { projectId, username, key },
@@ -111,6 +112,7 @@ app.post('/api/var/get', async (req, res) => {
   try {
     const { projectId = "default_project", username, key } = req.body;
     if (!username || !key) return res.status(400).json({ error: "Thiếu username hoặc key" });
+    if (String(key).length > 200) return res.status(400).json({ error: "Key không được vượt quá 200 ký tự" });
 
     const record = await CloudVar.findOne({ projectId, username, key });
     if (!record) return res.json({ success: true, value: "" });
