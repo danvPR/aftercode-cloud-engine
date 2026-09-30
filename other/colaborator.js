@@ -128,17 +128,13 @@
 
     function scheduleCloudflareSave(delay = 1500, broadcastAfter = false, syncAssets = false) {
         if (!currentRoomId || isRemoteActive()) return;
-        if (syncAssets) pendingAssetSync = true;
         if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
         
         cloudflareSaveTimer = setTimeout(async () => {
             try {
-                // CHỈ đồng bộ assets lên R2 khi có cờ pendingAssetSync (tránh spam request HEAD)
-                if (pendingAssetSync) {
-                    for (const t of Scratch.vm.runtime.targets) {
-                        await syncTargetAssetsToR2(t);
-                    }
-                    pendingAssetSync = false;
+                // Luôn kiểm tra và đẩy mọi asset mới/thay đổi lên R2 (đã có uploadedR2Assets kiểm soát chống spam)
+                for (const t of Scratch.vm.runtime.targets) {
+                    await syncTargetAssetsToR2(t);
                 }
                 
                 // Tải snapshot dự án lên Cloudflare Durable Object
@@ -336,6 +332,9 @@
 
                 Scratch.vm.emitTargetsUpdate();
                 Scratch.vm.emitWorkspaceUpdate();
+                if (Scratch.vm.runtime && typeof Scratch.vm.runtime.requestRedraw === 'function') {
+                    Scratch.vm.runtime.requestRedraw();
+                }
             } finally {
                 exitRemoteScope();
             }
@@ -431,9 +430,35 @@
         let asset = storage && soundData.assetId ? storage.get(soundData.assetId) : null;
 
         if (!asset && storage) {
-            const buffer = await fetchAssetBufferFromR2(fileName);
-            if (buffer) {
-                const assetType = storage.AssetType ? storage.AssetType.Sound : 'Sound';
+            const assetType = storage.AssetType ? storage.AssetType.Sound : 'Sound';
+            // 1. Thử lấy từ R2
+            let buffer = await fetchAssetBufferFromR2(fileName);
+
+            // 2. Nếu R2 chưa có (sprite thư viện mặc định), lấy qua storage.load của TurboWarp
+            if (!buffer && typeof storage.load === 'function') {
+                try {
+                    const loaded = await storage.load(assetType, soundData.assetId, soundData.dataFormat);
+                    if (loaded && loaded.data) {
+                        asset = loaded;
+                        buffer = loaded.data;
+                        uploadAssetBinaryToR2(fileName, buffer, soundData.dataFormat === 'wav' ? 'audio/wav' : 'audio/mpeg');
+                    }
+                } catch (e) {}
+            }
+
+            // 3. Nếu vẫn chưa có, kéo trực tiếp từ Scratch Asset CDN chính thức
+            if (!buffer) {
+                try {
+                    const cdnRes = await fetch(`https://assets.scratch.mit.edu/internalapi/asset/${fileName}/get/`);
+                    if (cdnRes.ok) {
+                        const blob = await cdnRes.blob();
+                        buffer = new Uint8Array(await blob.arrayBuffer());
+                        uploadAssetBinaryToR2(fileName, buffer, soundData.dataFormat === 'wav' ? 'audio/wav' : 'audio/mpeg');
+                    }
+                } catch (e) {}
+            }
+
+            if (buffer && !asset) {
                 asset = storage.createAsset(assetType, soundData.dataFormat, buffer, soundData.assetId, false);
             }
         }
@@ -470,18 +495,48 @@
         let asset = storage && costumeData.assetId ? storage.get(costumeData.assetId) : null;
 
         if (!asset && storage) {
-            let buffer = await fetchAssetBufferFromR2(fileName);
             const isSvg = costumeData.dataFormat === 'svg';
             const assetType = isSvg
                 ? (storage.AssetType ? storage.AssetType.ImageVector : 'ImageVector')
                 : (storage.AssetType ? storage.AssetType.ImageBitmap : 'ImageBitmap');
+
+            // 1. Thử lấy từ Cloudflare R2
+            let buffer = await fetchAssetBufferFromR2(fileName);
+
+            // 2. Nếu R2 chưa kịp có (sprite thư viện mặc định), lấy qua storage.load của TurboWarp
+            if (!buffer && typeof storage.load === 'function') {
+                try {
+                    const loaded = await storage.load(assetType, costumeData.assetId, costumeData.dataFormat);
+                    if (loaded && loaded.data) {
+                        asset = loaded;
+                        buffer = loaded.data;
+                        uploadAssetBinaryToR2(fileName, buffer, isSvg ? 'image/svg+xml' : 'image/png');
+                    }
+                } catch (e) {}
+            }
+
+            // 3. Nếu storage.load chưa lấy được, kéo trực tiếp từ Scratch CDN chính thức
             if (!buffer) {
-                // Tạo buffer ảnh trống 1x1 dự phòng nếu asset chưa kịp tải xong nhằm ngăn chặn crash UI
+                try {
+                    const cdnRes = await fetch(`https://assets.scratch.mit.edu/internalapi/asset/${fileName}/get/`);
+                    if (cdnRes.ok) {
+                        const blob = await cdnRes.blob();
+                        buffer = new Uint8Array(await blob.arrayBuffer());
+                        uploadAssetBinaryToR2(fileName, buffer, isSvg ? 'image/svg+xml' : 'image/png');
+                    }
+                } catch (e) {}
+            }
+
+            // 4. Nếu mất kết nối hoàn toàn mới dùng buffer 1x1 dự phòng
+            if (!buffer && !asset) {
                 buffer = isSvg 
                     ? new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>')
                     : new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,10,73,68,65,84,120,156,99,0,1,0,0,5,0,1,13,10,45,180,0,0,0,0,73,69,78,68,174,66,96,130]);
             }
-            asset = storage.createAsset(assetType, costumeData.dataFormat, buffer, costumeData.assetId, false);
+
+            if (!asset) {
+                asset = storage.createAsset(assetType, costumeData.dataFormat, buffer, costumeData.assetId, false);
+            }
         }
 
         const costumeObj = {
@@ -1243,7 +1298,7 @@
         Scratch.vm.addSprite = async function(input) {
             const result = await originalAddSprite.call(this, input);
             if (!isRemoteActive() && room) {
-                scheduleCloudflareSave(300, true);
+                scheduleCloudflareSave(600, true, true);
             }
             return result;
         };
