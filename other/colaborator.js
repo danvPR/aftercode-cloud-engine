@@ -209,22 +209,26 @@
                 const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
                 if (stageTarget && snapshot.stage) {
                     if (snapshot.stage.costumes) {
-                        disposeTargetSkins(stageTarget);
-                        stageTarget.sprite.costumes = [];
+                        const newCostumes = [];
                         for (const c of snapshot.stage.costumes) {
                             const cObj = await deserializeCostume(c);
-                            if (cObj) stageTarget.addCostume(cObj);
+                            if (cObj) newCostumes.push(cObj);
+                        }
+                        if (newCostumes.length > 0) {
+                            disposeTargetSkins(stageTarget);
+                            stageTarget.sprite.costumes = newCostumes;
                         }
                     }
                     if (snapshot.stage.sounds) {
-                        stageTarget.sprite.sounds = [];
+                        const newSounds = [];
                         for (const s of snapshot.stage.sounds) {
                             const sObj = await deserializeSound(s);
-                            if (sObj) stageTarget.sprite.sounds.push(sObj);
+                            if (sObj) newSounds.push(sObj);
                         }
+                        stageTarget.sprite.sounds = newSounds;
                     }
-                    if (typeof snapshot.stage.currentCostume === 'number') {
-                        stageTarget.setCostume(snapshot.stage.currentCostume);
+                    if (typeof snapshot.stage.currentCostume === 'number' && stageTarget.sprite.costumes.length > 0) {
+                        stageTarget.setCostume(Math.min(Math.max(0, snapshot.stage.currentCostume), stageTarget.sprite.costumes.length - 1));
                     }
                     if (snapshot.stage.variables) {
                         for (const varId in snapshot.stage.variables) {
@@ -269,9 +273,18 @@
                         updateLoadingProgress('Đang thiết lập dữ liệu...', `Khởi tạo: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
 
                         let target = Scratch.vm.runtime.targets.find(t => !t.isStage && t.sprite.name === spData.name);
+                        
+                        // Tải trước toàn bộ costume để không bao giờ để sprite ở trạng thái 0 costume
+                        let initialCostumes = [];
+                        if (spData.costumes) {
+                            for (const c of spData.costumes) {
+                                const cObj = await deserializeCostume(c);
+                                if (cObj) initialCostumes.push(cObj);
+                            }
+                        }
+
                         if (!target) {
-                            // Xóa rỗng danh sách costume/sound tạm thời khi khởi tạo để tránh lỗi thiếu cache assets
-                            const cleanJSON = Object.assign({}, spData.targetJSON, { costumes: [], sounds: [], blocks: {} });
+                            const cleanJSON = Object.assign({}, spData.targetJSON, { costumes: initialCostumes, sounds: [], blocks: {} });
                             const added = await Scratch.vm.addSprite(cleanJSON);
                             target = (added && added.id ? added : (Array.isArray(added) ? added[0] : null))
                                 || Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
@@ -281,26 +294,23 @@
                             if (target.sprite && target.sprite.name !== spData.name) {
                                 target.sprite.name = spData.name;
                             }
-                            if (spData.costumes) {
+                            if (initialCostumes.length > 0) {
                                 disposeTargetSkins(target);
-                                target.sprite.costumes = [];
-                                for (const c of spData.costumes) {
-                                    const cObj = await deserializeCostume(c);
-                                    if (cObj) target.addCostume(cObj);
-                                }
+                                target.sprite.costumes = initialCostumes;
                                 const cIdx = (spData.targetJSON && typeof spData.targetJSON.currentCostume === 'number') 
                                     ? spData.targetJSON.currentCostume : (target.currentCostume || 0);
-                                target.setCostume(cIdx);
+                                target.setCostume(Math.min(Math.max(0, cIdx), initialCostumes.length - 1));
                                 if (typeof target.updateAllDrawableProperties === 'function') {
                                     target.updateAllDrawableProperties();
                                 }
                             }
                             if (spData.sounds) {
-                                target.sprite.sounds = [];
+                                const newSounds = [];
                                 for (const s of spData.sounds) {
                                     const sObj = await deserializeSound(s);
-                                    if (sObj) target.sprite.sounds.push(sObj);
+                                    if (sObj) newSounds.push(sObj);
                                 }
+                                target.sprite.sounds = newSounds;
                             }
                             if (spData.variables) {
                                 for (const varId in spData.variables) {
@@ -460,14 +470,18 @@
         let asset = storage && costumeData.assetId ? storage.get(costumeData.assetId) : null;
 
         if (!asset && storage) {
-            const buffer = await fetchAssetBufferFromR2(fileName);
-            if (buffer) {
-                const isSvg = costumeData.dataFormat === 'svg';
-                const assetType = isSvg
-                    ? (storage.AssetType ? storage.AssetType.ImageVector : 'ImageVector')
-                    : (storage.AssetType ? storage.AssetType.ImageBitmap : 'ImageBitmap');
-                asset = storage.createAsset(assetType, costumeData.dataFormat, buffer, costumeData.assetId, false);
+            let buffer = await fetchAssetBufferFromR2(fileName);
+            const isSvg = costumeData.dataFormat === 'svg';
+            const assetType = isSvg
+                ? (storage.AssetType ? storage.AssetType.ImageVector : 'ImageVector')
+                : (storage.AssetType ? storage.AssetType.ImageBitmap : 'ImageBitmap');
+            if (!buffer) {
+                // Tạo buffer ảnh trống 1x1 dự phòng nếu asset chưa kịp tải xong nhằm ngăn chặn crash UI
+                buffer = isSvg 
+                    ? new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>')
+                    : new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,10,73,68,65,84,120,156,99,0,1,0,0,5,0,1,13,10,45,180,0,0,0,0,73,69,78,68,174,66,96,130]);
             }
+            asset = storage.createAsset(assetType, costumeData.dataFormat, buffer, costumeData.assetId, false);
         }
 
         const costumeObj = {
@@ -1128,7 +1142,7 @@
             originalSetXY.call(this, x, y, force);
             // NGẮT ĐỒNG BỘ NẾU DỰ ÁN ĐANG CHẠY (GREEN FLAG) ĐỂ TRÁNH SPAM WS
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
-            if (!isApplyingRemote && room && this.isOriginal) {
+            if (!isRemoteActive() && room && this.isOriginal) {
                 const now = Date.now();
                 if (now - (this._lastXYSync || 0) > 60) {
                     this._lastXYSync = now;
@@ -1141,7 +1155,7 @@
         targetProto.setSize = function(size) {
             originalSetSize.call(this, size);
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
-            if (!isApplyingRemote && room && this.isOriginal) {
+            if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'size', value: this.size });
                 scheduleCloudflareSave(3000, false, false);
             }
@@ -1151,7 +1165,7 @@
         targetProto.setDirection = function(dir) {
             originalSetDirection.call(this, dir);
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
-            if (!isApplyingRemote && room && this.isOriginal) {
+            if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'direction', value: this.direction });
                 scheduleCloudflareSave(3000, false, false);
             }
@@ -1161,7 +1175,7 @@
         targetProto.setCostume = function(index) {
             originalSetCostume.call(this, index);
             if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
-            if (!isApplyingRemote && room && this.isOriginal) {
+            if (!isRemoteActive() && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'costume', value: this.currentCostume });
                 scheduleCloudflareSave(3000, false, false);
             }
@@ -1170,7 +1184,7 @@
         const originalAddCostume = targetProto.addCostume;
         targetProto.addCostume = function(costume, optIndex) {
             const result = originalAddCostume.call(this, costume, optIndex);
-            if (!isApplyingRemote && room) scheduleCloudflareSave(800, true, true);
+            if (!isRemoteActive() && room) scheduleCloudflareSave(800, true, true);
             return result;
         };
 
@@ -1178,7 +1192,7 @@
             const originalDeleteCostume = targetProto.deleteCostume;
             targetProto.deleteCostume = function(index) {
                 const result = originalDeleteCostume.call(this, index);
-                if (!isApplyingRemote && room) scheduleCloudflareSave(800, true, false);
+                if (!isRemoteActive() && room) scheduleCloudflareSave(800, true, false);
                 return result;
             };
         }
