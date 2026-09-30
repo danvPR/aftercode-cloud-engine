@@ -387,15 +387,16 @@
             let asset = c.asset;
             if (!asset && c.assetId && Scratch.vm.runtime.storage) asset = Scratch.vm.runtime.storage.get(c.assetId);
             
-            if (asset && asset.data) {
-                const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
-                const mime = c.dataFormat === 'svg' ? 'image/svg+xml' : 'image/png';
-                tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
-            } else if (asset && typeof asset.encodeTextData === 'function' && c.dataFormat === 'svg') {
+            const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
+            const isSvg = c.dataFormat === 'svg';
+            const mime = isSvg ? 'image/svg+xml' : 'image/png';
+
+            if (isSvg && asset && typeof asset.encodeTextData === 'function') {
                 const textData = asset.encodeTextData();
                 const encoded = new TextEncoder().encode(textData);
-                const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
-                tasks.push(uploadAssetBinaryToR2(fName, encoded, 'image/svg+xml'));
+                tasks.push(uploadAssetBinaryToR2(fName, encoded, mime));
+            } else if (asset && asset.data) {
+                tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
             }
         }
 
@@ -417,7 +418,18 @@
             const res = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`);
             if (!res.ok) return null;
             const blob = await res.blob();
-            return new Uint8Array(await blob.arrayBuffer());
+            let buffer = new Uint8Array(await blob.arrayBuffer());
+
+            // TỰ ĐỘNG PHỤC HỒI DỮ LIỆU: Xử lý trường hợp dữ liệu nhận về bị biến thành chuỗi số ASCII "60,115,118..."
+            if (buffer.length > 2 && buffer[0] === 54 && buffer[1] === 48 && buffer[2] === 44) {
+                const text = new TextDecoder().decode(buffer);
+                if (/^\d+(,\d+)*$/.test(text.trim())) {
+                    const numbers = text.trim().split(',').map(n => parseInt(n, 10));
+                    buffer = new Uint8Array(numbers);
+                }
+            }
+
+            return buffer;
         } catch (e) {
             console.error("[DANV Workspace] Lỗi truy xuất tài nguyên máy chủ:", fileName, e);
             return null;
