@@ -208,9 +208,13 @@
         }, delay);
     }
 
-    // TỰ ĐỘNG PHÁT HIỆN BẤT ĐỒNG BỘ VÀ SYNC TỨC THÌ (CHẠY ĐỊNH KỲ MỖI 3 GIÂY)
+    // CƠ CHẾ KIỂM TRA ĐỒNG BỘ AN TOÀN (CHỈ KHÔI PHỤC KHI KHÔNG CÓ THAO TÁC CỤC BỘ)
     async function checkAndAutoSyncDesync() {
+        // Tuyệt đối không can thiệp nếu đang áp dụng sự kiện hoặc đang có hẹn giờ lưu
         if (!currentRoomId || isRemoteActive() || isAutoSyncing || cloudflareSaveTimer !== null) return;
+        // Nếu người dùng đang mở tab vẽ hoặc đang tương tác, không được gián đoạn
+        if (isCostumeTabActive()) return;
+
         try {
             const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`);
             if (!res.ok) return;
@@ -218,25 +222,19 @@
             if (!resJson.exists || !resJson.data) return;
 
             const remote = resJson.data;
-            const remoteTime = remote.timestamp || 0;
+            const remoteTime = remote.savedAt || remote.timestamp || 0;
             const localSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
             const remoteSpritesCount = (remote.sprites || []).length;
 
-            // ĐIỀU KIỆN PHÁT HIỆN LỆCH DỮ LIỆU:
-            // 1. Máy chủ có bản sửa đổi mới hơn bản hiện tại của máy mình (remoteTime > lastKnownProjectTimestamp)
-            // 2. Số lượng nhân vật (sprites) giữa 2 bên không khớp nhau
-            const hasNewerCloudVersion = remoteTime > (lastKnownProjectTimestamp + 50);
-            const hasSpriteMismatch = localSprites.length !== remoteSpritesCount;
+            // CHỈ đồng bộ lại khi máy chủ có thêm/bớt Sprite mà máy hiện tại hoàn toàn chưa có
+            const hasSpriteMismatch = Math.abs(localSprites.length - remoteSpritesCount) > 0;
+            const isSignificantlyNewer = remoteTime > (lastKnownProjectTimestamp + 8000); // Lệch trên 8 giây
 
-            if (hasNewerCloudVersion || hasSpriteMismatch) {
-                console.log("[DANV Workspace ⚡] Phát hiện bất đồng bộ! Lập tức kích hoạt đồng bộ khẩn cấp...");
+            if (hasSpriteMismatch && isSignificantlyNewer) {
+                console.log("[DANV Workspace ⚡] Phát hiện lệch cấu trúc Sprite, đang đồng bộ ngầm an toàn...");
                 isAutoSyncing = true;
-                showCostumeLock('⚡ Đang tự động sửa lệch dữ liệu...');
                 await restoreProjectFromCloudflare(currentRoomId, true);
-                setTimeout(() => {
-                    if (!isCostumeLocked) hideCostumeLock();
-                    isAutoSyncing = false;
-                }, 800);
+                isAutoSyncing = false;
             }
         } catch (e) {
             isAutoSyncing = false;
@@ -463,9 +461,12 @@
     async function uploadAssetBinaryToR2(fileName, dataBuffer, mimeType) {
         if (!fileName || !dataBuffer || uploadedR2Assets.has(fileName)) return true;
         try {
-            // Đẩy thẳng PUT (Backend D1 đã có ON CONFLICT DO NOTHING bảo vệ trùng lặp)
-            // Giúp tiết kiệm 50% request lên Worker và loại bỏ hoàn toàn lỗi đỏ 404 của HEAD trên Console
-            const res = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`, {
+            // Đẩy thẳng PUT lên Cloudflare D1 kèm query room để lưu quan hệ phòng
+            const uploadUrl = currentRoomId 
+                ? `${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}?room=${encodeURIComponent(currentRoomId)}`
+                : `${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`;
+
+            const res = await fetch(uploadUrl, {
                 method: 'PUT',
                 headers: { 'Content-Type': mimeType || 'application/octet-stream' },
                 body: dataBuffer
@@ -1485,12 +1486,28 @@
             return result;
         };
 
-        // BẮT SỰ KIỆN XÓA SPRITE
+        // BẮT SỰ KIỆN XÓA SPRITE (KÈM TÍN HIỆU ĐỂ SERVER XÓA HẲN)
         const originalDeleteSprite = Scratch.vm.deleteSprite;
         Scratch.vm.deleteSprite = function(targetId) {
+            const target = Scratch.vm.runtime.getTargetById(targetId);
+            const deletedName = target && target.sprite ? target.sprite.name : null;
             const result = originalDeleteSprite.call(this, targetId);
             if (!isRemoteActive() && room) {
-                scheduleCloudflareSave(300, true);
+                if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
+                cloudflareSaveTimer = setTimeout(async () => {
+                    try {
+                        const snapshot = packCurrentProject();
+                        if (deletedName) snapshot.deletedSpriteName = deletedName;
+                        lastKnownProjectTimestamp = snapshot.timestamp;
+                        await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(snapshot)
+                        });
+                        if (room) room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH', timestamp: snapshot.timestamp });
+                    } catch (e) {}
+                    cloudflareSaveTimer = null;
+                }, 300);
             }
             return result;
         };
@@ -1712,7 +1729,7 @@
                     if (event.type === 'SYNC_SPRITE_PROP') {
                         const target = getTargetBySyncKey(event.spriteKey);
                         if (target) {
-                            isApplyingRemote = true;
+                            enterRemoteScope();
                             try {
                                 if (event.prop === 'xy') target.setXY(event.value.x, event.value.y);
                                 if (event.prop === 'size') target.setSize(event.value);
@@ -1720,7 +1737,7 @@
                                 if (event.prop === 'costume') target.setCostume(event.value);
                                 Scratch.vm.emitTargetsUpdate();
                             } finally {
-                                setTimeout(() => { isApplyingRemote = false; }, 40);
+                                requestAnimationFrame(() => { exitRemoteScope(); });
                             }
                         }
                     }
@@ -1728,13 +1745,13 @@
                     if (event.type === 'INSTANT_BLOCK_SYNC') {
                         const target = getTargetBySyncKey(event.spriteKey);
                         if (target) {
-                            isApplyingRemote = true;
+                            enterRemoteScope();
                             try {
                                 const parsed = JSON.parse(event.data);
                                 applyBlocksToTarget(target, parsed);
                                 Scratch.vm.emitWorkspaceUpdate();
                             } finally {
-                                setTimeout(() => { isApplyingRemote = false; }, 50);
+                                requestAnimationFrame(() => { exitRemoteScope(); });
                             }
                         }
                     }
