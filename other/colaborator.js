@@ -190,9 +190,9 @@
         return { stage: stageData, sprites: spritesData, timestamp: Date.now() };
     }
 
-    async function restoreProjectFromCloudflare(roomId) {
+    async function restoreProjectFromCloudflare(roomId, isBackground = false) {
         try {
-            updateLoadingProgress('Đang kết nối máy chủ...', 'Đang đồng bộ khối lượng dữ liệu...', 45);
+            if (!isBackground) updateLoadingProgress('Đang kết nối máy chủ...', 'Đang đồng bộ khối lượng dữ liệu...', 45);
             const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(roomId)}`);
             if (!res.ok) return false;
             const resJson = await res.json();
@@ -266,7 +266,7 @@
                 if (snapshot.sprites && Array.isArray(snapshot.sprites)) {
                     for (let i = 0; i < snapshot.sprites.length; i++) {
                         const spData = snapshot.sprites[i];
-                        updateLoadingProgress('Đang thiết lập dữ liệu...', `Khởi tạo: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
+                        if (!isBackground) updateLoadingProgress('Đang thiết lập dữ liệu...', `Khởi tạo: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
 
                         let target = Scratch.vm.runtime.targets.find(t => !t.isStage && t.sprite.name === spData.name);
                         
@@ -562,7 +562,13 @@
             try {
                 const rotationCenter = [costumeObj.rotationCenterX, costumeObj.rotationCenterY];
                 if (costumeObj.dataFormat === 'svg') {
-                    costumeObj.skinId = renderer.createSVGSkin(asset.decodeText(), rotationCenter);
+                    let svgString = asset.decodeText();
+                    // CHỐT CHẶN AN TOÀN: Đảm bảo dữ liệu thực sự là SVG hợp lệ, tránh Crash WebGL
+                    if (!svgString || (!svgString.includes('<svg') && !svgString.includes('<?xml'))) {
+                        console.warn("[Collab] Dữ liệu SVG bị hỏng hoặc chưa tải về kịp, áp dụng dự phòng.");
+                        svgString = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>';
+                    }
+                    costumeObj.skinId = renderer.createSVGSkin(svgString, rotationCenter);
                 } else {
                     costumeObj.skinId = renderer.createBitmapSkin(asset.data, costumeObj.bitmapResolution, rotationCenter);
                 }
@@ -1566,10 +1572,13 @@
                     }
 
                     if (event.type === 'SYNC_CLOUD_REFRESH') {
-                        console.log("[DANV Workspace ☁️] Phát hiện sự kiện nạp dự án. Đang đồng bộ thay đổi...");
-                        showLoadingScreen('Đang cập nhật thay đổi...', 'Hệ thống phát hiện tệp tin mới từ thành viên, đang tiến hành lấy dữ liệu...', 35);
-                        restoreProjectFromCloudflare(currentRoomId).then(() => {
-                            setTimeout(() => hideLoadingScreen(), 400);
+                        console.log("[DANV Workspace ☁️] Phát hiện sự kiện nạp dự án. Đang đồng bộ thay đổi ngầm...");
+                        showCostumeLock('⬇️ Đang đồng bộ dữ liệu mới từ thành viên...');
+                        restoreProjectFromCloudflare(currentRoomId, true).then(() => {
+                            setTimeout(() => {
+                                showCostumeLock('✅ Đã đồng bộ dữ liệu xong!');
+                                setTimeout(() => { if (!isCostumeLocked) hideCostumeLock(); }, 2500);
+                            }, 500);
                         });
                     }
                 });
