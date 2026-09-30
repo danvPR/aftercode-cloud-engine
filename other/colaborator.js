@@ -386,17 +386,25 @@
         for (const c of (target.sprite.costumes || [])) {
             let asset = c.asset;
             if (!asset && c.assetId && Scratch.vm.runtime.storage) asset = Scratch.vm.runtime.storage.get(c.assetId);
-            
+            if (!asset) continue;
+
             const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
             const isSvg = c.dataFormat === 'svg';
             const mime = isSvg ? 'image/svg+xml' : 'image/png';
 
-            if (isSvg && asset && typeof asset.encodeTextData === 'function') {
-                const textData = asset.encodeTextData();
-                const encoded = new TextEncoder().encode(textData);
-                tasks.push(uploadAssetBinaryToR2(fName, encoded, mime));
-            } else if (asset && asset.data) {
-                tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
+            // 1. Lấy trực tiếp dữ liệu nhị phân sẵn có trong asset.data (nhanh và chuẩn nhất)
+            let data = asset.data;
+
+            // 2. Dự phòng: nếu data bị thiếu và là SVG, dùng decodeText() (tuyệt đối không gọi encodeTextData)
+            if (!data && isSvg && typeof asset.decodeText === 'function') {
+                try {
+                    const textData = asset.decodeText();
+                    if (textData) data = new TextEncoder().encode(textData);
+                } catch (e) {}
+            }
+
+            if (data) {
+                tasks.push(uploadAssetBinaryToR2(fName, data, mime));
             }
         }
 
