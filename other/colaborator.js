@@ -117,13 +117,17 @@
         if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
         cloudflareSaveTimer = setTimeout(async () => {
             try {
+                // Tải toàn bộ tài nguyên nhị phân lên Cloudflare R2 trước
+                for (const t of Scratch.vm.runtime.targets) {
+                    await syncTargetAssetsToR2(t);
+                }
                 const snapshot = packCurrentProject();
                 await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(snapshot)
                 });
-                console.log("[Collab ☁️] Đã tự động sao lưu dự án lên Cloudflare.");
+                console.log("[Collab ☁️] Đã sao lưu dự án & đồng bộ tài nguyên R2.");
             } catch (e) {
                 console.error("[Collab ❌] Lỗi lưu lên Cloudflare:", e);
             }
@@ -172,13 +176,7 @@
             const snapshot = resJson.data;
             enterRemoteScope();
             try {
-                // 1. Xóa các sprite cũ hiện tại
-                const currentSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
-                for (const sp of currentSprites) {
-                    Scratch.vm.deleteSprite(sp.id);
-                }
-
-                // 2. Nạp Sân khấu (Stage)
+                // 1. Nạp Sân khấu (Stage)
                 const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
                 if (stageTarget && snapshot.stage) {
                     if (snapshot.stage.costumes) {
@@ -209,33 +207,50 @@
                     }
                 }
 
-                // 3. Nạp từng Sprite
+                // 2. Đồng bộ các Sprite In-Place (Giữ nguyên ID tránh đứt gãy tham chiếu blocks)
+                const incomingNames = new Set((snapshot.sprites || []).map(s => s.name));
+                const currentSprites = Scratch.vm.runtime.targets.filter(t => !t.isStage);
+
+                // Xóa những sprite không còn tồn tại trên bản lưu máy chủ
+                for (const sp of currentSprites) {
+                    if (!incomingNames.has(sp.sprite.name)) {
+                        Scratch.vm.deleteSprite(sp.id);
+                    }
+                }
+
+                // Cập nhật hoặc thêm mới từng sprite
                 if (snapshot.sprites && Array.isArray(snapshot.sprites)) {
                     for (let i = 0; i < snapshot.sprites.length; i++) {
                         const spData = snapshot.sprites[i];
                         updateLoadingProgress('Tải từ Cloudflare...', `Đang nạp: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
 
-                        if (spData.costumes) {
-                            for (const c of spData.costumes) await deserializeCostume(c);
+                        let target = Scratch.vm.runtime.targets.find(t => !t.isStage && t.sprite.name === spData.name);
+                        if (!target) {
+                            const added = await Scratch.vm.addSprite(spData.targetJSON);
+                            target = (added && added.id ? added : (Array.isArray(added) ? added[0] : null))
+                                || Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
                         }
 
-                        const added = await Scratch.vm.addSprite(spData.targetJSON);
-                        const addedTarget = (added && added.id ? added : (Array.isArray(added) ? added[0] : null)) 
-                            || Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
-
-                        if (addedTarget) {
-                            if (addedTarget.sprite && addedTarget.sprite.name !== spData.name) {
-                                addedTarget.sprite.name = spData.name;
+                        if (target) {
+                            if (target.sprite && target.sprite.name !== spData.name) {
+                                target.sprite.name = spData.name;
+                            }
+                            if (spData.costumes) {
+                                target.sprite.costumes = [];
+                                for (const c of spData.costumes) {
+                                    const cObj = await deserializeCostume(c);
+                                    if (cObj) target.addCostume(cObj);
+                                }
                             }
                             if (spData.sounds) {
-                                addedTarget.sprite.sounds = [];
+                                target.sprite.sounds = [];
                                 for (const s of spData.sounds) {
                                     const sObj = await deserializeSound(s);
-                                    if (sObj) addedTarget.sprite.sounds.push(sObj);
+                                    if (sObj) target.sprite.sounds.push(sObj);
                                 }
                             }
                             if (spData.blocks) {
-                                applyBlocksToTarget(addedTarget, {
+                                applyBlocksToTarget(target, {
                                     blocks: spData.blocks,
                                     comments: spData.comments || {}
                                 });
@@ -256,89 +271,112 @@
         }
     }
 
-    // --- MÃ HÓA & GIẢI MÃ ÂM THANH (SOUNDS) ---
-    function serializeSound(sound) {
-        if (!sound) return null;
-        let dataURI = null;
+    // --- BỘ TẢI & ĐỒNG BỘ ASSETS QUA CLOUDFLARE R2 (KHÔNG DÙNG BASE64) ---
+    const uploadedR2Assets = new Set();
+
+    async function uploadAssetBinaryToR2(fileName, dataBuffer, mimeType) {
+        if (!fileName || !dataBuffer || uploadedR2Assets.has(fileName)) return true;
         try {
-            let asset = sound.asset;
-            if (!asset && sound.assetId && Scratch.vm.runtime.storage) {
-                asset = Scratch.vm.runtime.storage.get(sound.assetId);
+            const headCheck = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`, { method: 'HEAD' });
+            if (headCheck.ok) {
+                uploadedR2Assets.add(fileName);
+                return true;
             }
-            if (asset && typeof asset.encodeDataURI === 'function') {
-                dataURI = asset.encodeDataURI();
-            } else if (asset && asset.data) {
-                const mime = sound.dataFormat === 'wav' ? 'audio/wav' : 'audio/mpeg';
-                let binary = '';
-                const bytes = new Uint8Array(asset.data);
-                for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                dataURI = `data:${mime};base64,` + btoa(binary);
+            const res = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': mimeType || 'application/octet-stream' },
+                body: dataBuffer
+            });
+            if (res.ok) {
+                uploadedR2Assets.add(fileName);
+                return true;
             }
         } catch (e) {
-            console.warn("[Collab] Lỗi encode sound:", e);
+            console.warn("[Collab R2] Lỗi tải asset lên R2:", fileName, e);
         }
+        return false;
+    }
+
+    async function syncTargetAssetsToR2(target) {
+        if (!target || !target.sprite) return;
+        const tasks = [];
+
+        for (const c of (target.sprite.costumes || [])) {
+            let asset = c.asset;
+            if (!asset && c.assetId && Scratch.vm.runtime.storage) asset = Scratch.vm.runtime.storage.get(c.assetId);
+            if (asset && asset.data) {
+                const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
+                const mime = c.dataFormat === 'svg' ? 'image/svg+xml' : 'image/png';
+                tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
+            }
+        }
+
+        for (const s of (target.sprite.sounds || [])) {
+            let asset = s.asset;
+            if (!asset && s.assetId && Scratch.vm.runtime.storage) asset = Scratch.vm.runtime.storage.get(s.assetId);
+            if (asset && asset.data) {
+                const fName = s.md5ext || `${s.assetId}.${s.dataFormat}`;
+                const mime = s.dataFormat === 'wav' ? 'audio/wav' : 'audio/mpeg';
+                tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
+            }
+        }
+
+        await Promise.all(tasks);
+    }
+
+    async function fetchAssetBufferFromR2(fileName) {
+        try {
+            const res = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`);
+            if (!res.ok) return null;
+            const blob = await res.blob();
+            return new Uint8Array(await blob.arrayBuffer());
+        } catch (e) {
+            console.error("[Collab R2] Lỗi nạp asset:", fileName, e);
+            return null;
+        }
+    }
+
+    // --- MÃ HÓA & GIẢI MÃ ÂM THANH (CHỈ CHỨA METADATA NHẸ) ---
+    function serializeSound(sound) {
+        if (!sound) return null;
         return {
             name: sound.name,
             dataFormat: sound.dataFormat,
             assetId: sound.assetId,
             md5ext: sound.md5ext || `${sound.assetId}.${sound.dataFormat}`,
             rate: sound.rate,
-            sampleCount: sound.sampleCount,
-            dataURI: dataURI
+            sampleCount: sound.sampleCount
         };
     }
 
     async function deserializeSound(soundData) {
         if (!soundData) return null;
         const storage = Scratch.vm.runtime.storage;
-        let asset = null;
-        if (storage && soundData.dataURI) {
-            try {
-                const res = await fetch(soundData.dataURI);
-                const blob = await res.blob();
-                const buffer = new Uint8Array(await blob.arrayBuffer());
+        const fileName = soundData.md5ext || `${soundData.assetId}.${soundData.dataFormat}`;
+        let asset = storage && soundData.assetId ? storage.get(soundData.assetId) : null;
+
+        if (!asset && storage) {
+            const buffer = await fetchAssetBufferFromR2(fileName);
+            if (buffer) {
                 const assetType = storage.AssetType ? storage.AssetType.Sound : 'Sound';
                 asset = storage.createAsset(assetType, soundData.dataFormat, buffer, soundData.assetId, false);
-            } catch (e) {
-                console.error("[Collab] Lỗi decode sound asset:", e);
             }
         }
+
         return {
             name: soundData.name,
             dataFormat: soundData.dataFormat,
             asset: asset,
             assetId: soundData.assetId,
-            md5: soundData.md5ext,
+            md5: fileName,
             rate: soundData.rate,
             sampleCount: soundData.sampleCount
         };
     }
 
-    // --- MÃ HÓA & GIẢI MÃ TRANG PHỤC (COSTUMES) ---
+    // --- MÃ HÓA & GIẢI MÃ TRANG PHỤC (CHỈ CHỨA METADATA NHẸ) ---
     function serializeCostume(costume) {
         if (!costume) return null;
-        let dataURI = null;
-        try {
-            let asset = costume.asset;
-            if (!asset && costume.assetId && Scratch.vm.runtime.storage) {
-                asset = Scratch.vm.runtime.storage.get(costume.assetId);
-            }
-            if (asset && typeof asset.encodeDataURI === 'function') {
-                dataURI = asset.encodeDataURI();
-            } else if (asset && asset.data) {
-                const mime = costume.dataFormat === 'svg' ? 'image/svg+xml' : 'image/png';
-                let binary = '';
-                const bytes = new Uint8Array(asset.data);
-                for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                }
-                dataURI = `data:${mime};base64,` + btoa(binary);
-            }
-        } catch (err) {
-            console.error("[Collab] Lỗi encode costume asset:", err);
-        }
         return {
             name: costume.name,
             dataFormat: costume.dataFormat,
@@ -346,29 +384,24 @@
             md5ext: costume.md5ext || `${costume.assetId}.${costume.dataFormat}`,
             rotationCenterX: costume.rotationCenterX,
             rotationCenterY: costume.rotationCenterY,
-            bitmapResolution: costume.bitmapResolution || 1,
-            dataURI: dataURI
+            bitmapResolution: costume.bitmapResolution || 1
         };
     }
 
     async function deserializeCostume(costumeData) {
         if (!costumeData) return null;
         const storage = Scratch.vm.runtime.storage;
-        let asset = null;
+        const fileName = costumeData.md5ext || `${costumeData.assetId}.${costumeData.dataFormat}`;
+        let asset = storage && costumeData.assetId ? storage.get(costumeData.assetId) : null;
 
-        if (storage && costumeData.dataURI) {
-            try {
-                const res = await fetch(costumeData.dataURI);
-                const blob = await res.blob();
-                const buffer = new Uint8Array(await blob.arrayBuffer());
+        if (!asset && storage) {
+            const buffer = await fetchAssetBufferFromR2(fileName);
+            if (buffer) {
                 const isSvg = costumeData.dataFormat === 'svg';
                 const assetType = isSvg
                     ? (storage.AssetType ? storage.AssetType.ImageVector : 'ImageVector')
                     : (storage.AssetType ? storage.AssetType.ImageBitmap : 'ImageBitmap');
-
                 asset = storage.createAsset(assetType, costumeData.dataFormat, buffer, costumeData.assetId, false);
-            } catch (e) {
-                console.error("[Collab] Lỗi tạo costume asset:", e);
             }
         }
 
@@ -377,7 +410,7 @@
             dataFormat: costumeData.dataFormat,
             asset: asset,
             assetId: costumeData.assetId,
-            md5: costumeData.md5ext || `${costumeData.assetId}.${costumeData.dataFormat}`,
+            md5: fileName,
             rotationCenterX: costumeData.rotationCenterX,
             rotationCenterY: costumeData.rotationCenterY,
             bitmapResolution: costumeData.bitmapResolution || 1,
@@ -754,13 +787,20 @@
         const msgBox = document.getElementById('collab-chat-messages');
         if (!msgBox) return;
 
+        const escapeSafeHTML = (str) => String(str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
         const isMe = msg.sender === myUserName;
         const timeStr = new Date(msg.time || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const row = document.createElement('div');
         row.style.cssText = `display: flex; flex-direction: column; align-items: ${isMe ? 'flex-end' : 'flex-start'};`;
         row.innerHTML = `
-            <span style="font-size: 10.5px; color: #858ca0; margin-bottom: 2px;">${isMe ? 'Bạn' : msg.sender} • ${timeStr}</span>
-            <div style="background: ${isMe ? '#4C97FF' : '#33374b'}; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; max-width: 80%; word-break: break-word;">${msg.text.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+            <span style="font-size: 10.5px; color: #858ca0; margin-bottom: 2px;">${isMe ? 'Bạn' : escapeSafeHTML(msg.sender)} • ${timeStr}</span>
+            <div style="background: ${isMe ? '#4C97FF' : '#33374b'}; color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 12px; max-width: 80%; word-break: break-word;">${escapeSafeHTML(msg.text)}</div>
         `;
         msgBox.appendChild(row);
         msgBox.scrollTop = msgBox.scrollHeight;
@@ -994,6 +1034,8 @@
 
     // --- HOOKS VÀO SCRATCH VM ---
     function setupSpriteHooks() {
+        if (Scratch.vm._hasCollabSpriteHooks) return;
+        Scratch.vm._hasCollabSpriteHooks = true;
         const stage = Scratch.vm.runtime.targets[0];
         const targetProto = Object.getPrototypeOf(stage);
 
@@ -1054,6 +1096,8 @@
     }
 
     function setupVMHooks() {
+        if (Scratch.vm._hasCollabVMHooks) return;
+        Scratch.vm._hasCollabVMHooks = true;
         const stage = Scratch.vm.runtime.targets[0];
         const blockContainerProto = Object.getPrototypeOf(stage.blocks);
         const originalBlocklyListen = blockContainerProto.blocklyListen;
@@ -1128,7 +1172,11 @@
             const result = await originalLoadProject.call(this, input);
             if (!isRemoteActive() && room) {
                 try {
-                    updateLoadingProgress('Đang tải lên...', 'Đang lưu dự án mới lên Cloudflare 24/7...', 70);
+                    updateLoadingProgress('Đang tải lên...', 'Đang đẩy toàn bộ tài nguyên lên Cloudflare R2...', 50);
+                    for (const t of Scratch.vm.runtime.targets) {
+                        await syncTargetAssetsToR2(t);
+                    }
+                    updateLoadingProgress('Đang tải lên...', 'Đang lưu dự án mới lên Cloudflare 24/7...', 80);
                     const snapshot = packCurrentProject();
                     await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                         method: 'POST',
@@ -1217,7 +1265,9 @@
 
                 document.addEventListener('mousemove', (e) => {
                     if (Date.now() - lastMouseTime > 50 && room) {
-                        room.updatePresence({ cursor: { x: e.clientX, y: e.clientY }, name: myUserName });
+                        const relX = e.clientX / Math.max(1, window.innerWidth);
+                        const relY = e.clientY / Math.max(1, window.innerHeight);
+                        room.updatePresence({ cursor: { x: relX, y: relY }, name: myUserName });
                         lastMouseTime = Date.now();
                     }
                 });
@@ -1249,8 +1299,10 @@
                             }
                             const labelEl = el.querySelector('.collab-cursor-name');
                             if (labelEl) labelEl.textContent = p.name || `Người dùng #${cid}`;
-                            el.style.left = p.cursor.x + 'px';
-                            el.style.top = p.cursor.y + 'px';
+                            const posX = (p.cursor.x <= 1 ? p.cursor.x * window.innerWidth : p.cursor.x);
+                            const posY = (p.cursor.y <= 1 ? p.cursor.y * window.innerHeight : p.cursor.y);
+                            el.style.left = posX + 'px';
+                            el.style.top = posY + 'px';
                         }
 
                         if (p && p.editingCostume && (now - p.editingCostume.timestamp < 10000)) {
