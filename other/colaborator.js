@@ -1,24 +1,24 @@
-// Name: DANV Collaborative Coding (Hybrid Liveblocks + Cloudflare)
+// Name: DANV Collaborative Workspace
 // ID: liveblockscollab
-// Description: Cộng tác thời gian thực siêu tốc độ kết hợp Liveblocks & Cloudflare Server 24/7.
-// By: StudioDANV & AI
+// Description: Nền tảng làm việc nhóm và cộng tác theo thời gian thực dành cho dự án.
+// By: StudioDANV
 // License: MIT
 
 (async function(Scratch) {
     'use strict';
 
     if (!Scratch.extensions.unsandboxed) {
-        alert('LỖI: Extension bắt buộc phải chạy chế độ Unsandboxed!');
+        alert('Hệ thống: Tiện ích mở rộng yêu cầu chạy ở chế độ Unsandboxed.');
         return;
     }
 
-    console.log("[Collab ⏳] Đang tải thư viện Liveblocks...");
+    console.log("[DANV Workspace ⏳] Đang khởi tạo thư viện cộng tác...");
     const { createClient, LiveMap } = await import('https://esm.sh/@liveblocks/client?bundle');
 
-    // 1. MÁY CHỦ CLOUDFLARE CỦA BẠN (LƯU DỰ ÁN 24/7)
+    // 1. MÁY CHỦ TRUNG TÂM (LƯU TRỮ DỰ ÁN ĐỒNG BỘ)
     const CLOUDFLARE_URL = "https://collab-extension.danvws.workers.dev";
 
-    // 2. LIVEBLOCKS (XỬ LÝ CHUỘT, CHAT, KHÓA VẼ)
+    // 2. KẾT NỐI THỜI GIAN THỰC (XỬ LÝ CHUỘT, TRÒ CHUYỆN, KHÓA TÀI NGUYÊN)
     const PUBLIC_API_KEY = "pk_dev_kA8Le_ojSQGAiMqwZu_gKFmMeznbD-5AN28BbxPYRaxYEIXUmc09Ewht7ylMt1JT"; 
     const client = createClient({ publicApiKey: PUBLIC_API_KEY });
 
@@ -127,9 +127,9 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(snapshot)
                 });
-                console.log("[Collab ☁️] Đã sao lưu dự án & đồng bộ tài nguyên R2.");
+                console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ và đồng bộ tài nguyên dự án.");
             } catch (e) {
-                console.error("[Collab ❌] Lỗi lưu lên Cloudflare:", e);
+                console.error("[DANV Workspace ❌] Lỗi kết nối tới máy chủ lưu trữ:", e);
             }
         }, delay);
     }
@@ -167,7 +167,7 @@
 
     async function restoreProjectFromCloudflare(roomId) {
         try {
-            updateLoadingProgress('Kết nối Cloudflare...', 'Đang nạp dữ liệu gốc 24/7...', 45);
+            updateLoadingProgress('Đang kết nối máy chủ...', 'Đang đồng bộ khối lượng dữ liệu...', 45);
             const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(roomId)}`);
             if (!res.ok) return false;
             const resJson = await res.json();
@@ -222,7 +222,7 @@
                 if (snapshot.sprites && Array.isArray(snapshot.sprites)) {
                     for (let i = 0; i < snapshot.sprites.length; i++) {
                         const spData = snapshot.sprites[i];
-                        updateLoadingProgress('Tải từ Cloudflare...', `Đang nạp: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
+                        updateLoadingProgress('Đang thiết lập dữ liệu...', `Khởi tạo: ${spData.name} (${i + 1}/${snapshot.sprites.length})...`, 50 + Math.round(((i + 1) / snapshot.sprites.length) * 40));
 
                         let target = Scratch.vm.runtime.targets.find(t => !t.isStage && t.sprite.name === spData.name);
                         if (!target) {
@@ -266,12 +266,12 @@
             }
             return true;
         } catch (err) {
-            console.error("[Collab ❌] Lỗi khôi phục từ Cloudflare:", err);
+            console.error("[DANV Workspace ❌] Lỗi khôi phục dữ liệu từ hệ thống:", err);
             return false;
         }
     }
 
-    // --- BỘ TẢI & ĐỒNG BỘ ASSETS QUA CLOUDFLARE R2 (KHÔNG DÙNG BASE64) ---
+    // --- BỘ XỬ LÝ QUẢN LÝ TÀI NGUYÊN MỞ RỘNG (KHÔNG SỬ DỤNG BASE64) ---
     const uploadedR2Assets = new Set();
 
     async function uploadAssetBinaryToR2(fileName, dataBuffer, mimeType) {
@@ -292,7 +292,7 @@
                 return true;
             }
         } catch (e) {
-            console.warn("[Collab R2] Lỗi tải asset lên R2:", fileName, e);
+            console.warn("[DANV Workspace] Cảnh báo sự cố đường truyền tải tài nguyên:", fileName, e);
         }
         return false;
     }
@@ -331,7 +331,7 @@
             const blob = await res.blob();
             return new Uint8Array(await blob.arrayBuffer());
         } catch (e) {
-            console.error("[Collab R2] Lỗi nạp asset:", fileName, e);
+            console.error("[DANV Workspace] Lỗi truy xuất tài nguyên máy chủ:", fileName, e);
             return null;
         }
     }
@@ -646,7 +646,7 @@
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;">
                         <div style="display:flex; align-items:center; gap:8px;">
                             <img src="${DANV_LOGO_URL}" style="height: 22px; width: auto;" alt="DANV" />
-                            <span style="font-size: 15px; font-weight: 600;">DANV Collab 24/7</span>
+                            <span style="font-size: 15px; font-weight: 600;">Không Gian Cộng Tác</span>
                         </div>
                         <div id="collab-modal-close" style="cursor:pointer; color:#858ca0;">${ICONS.close}</div>
                     </div>
@@ -1168,25 +1168,25 @@
         // BẮT SỰ KIỆN NẠP DỰ ÁN MỚI TỪ MÁY TÍNH (.SB3)
         const originalLoadProject = Scratch.vm.loadProject;
         Scratch.vm.loadProject = async function(input) {
-            showLoadingScreen('Đang nạp dự án...', 'Đang xử lý tệp dự án từ máy tính...', 30);
+            showLoadingScreen('Đang xử lý dự án...', 'Hệ thống đang phân tích cấu trúc tệp dữ liệu...', 30);
             const result = await originalLoadProject.call(this, input);
             if (!isRemoteActive() && room) {
                 try {
-                    updateLoadingProgress('Đang tải lên...', 'Đang đẩy toàn bộ tài nguyên lên Cloudflare R2...', 50);
+                    updateLoadingProgress('Đang đồng bộ...', 'Đang thiết lập tiến trình đẩy tài nguyên lên máy chủ...', 50);
                     for (const t of Scratch.vm.runtime.targets) {
                         await syncTargetAssetsToR2(t);
                     }
-                    updateLoadingProgress('Đang tải lên...', 'Đang lưu dự án mới lên Cloudflare 24/7...', 80);
+                    updateLoadingProgress('Đang thiết lập...', 'Khởi tạo cấu trúc môi trường cho các thành viên...', 80);
                     const snapshot = packCurrentProject();
                     await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(snapshot)
                     });
-                    console.log("[Collab ☁️] Đã đồng bộ dự án vừa nạp từ máy tính lên Cloudflare.");
+                    console.log("[DANV Workspace ☁️] Hoàn tất đẩy dữ liệu cấu trúc dự án mới.");
                     room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
                 } catch (e) {
-                    console.error("[Collab ❌] Lỗi đồng bộ dự án mới nạp:", e);
+                    console.error("[DANV Workspace ❌] Lỗi cập nhật dự án:", e);
                 } finally {
                     setTimeout(() => hideLoadingScreen(), 400);
                 }
@@ -1239,7 +1239,7 @@
             currentRoomId = roomId;
             myUserName = userName;
 
-            showLoadingScreen(`Đang kết nối [${roomId}]`, 'Đang thiết lập kết nối Cloudflare & Liveblocks...', 20);
+            showLoadingScreen(`Truy cập phòng [${roomId}]`, 'Hệ thống đang khởi tạo giao thức làm việc...', 20);
 
             setupDOM();
             setupVMHooks();
@@ -1249,14 +1249,14 @@
             setupChatUI();
 
             try {
-                // 1. TẢI DỰ ÁN TỪ CLOUDFLARE TRƯỚC (NẾU ĐÃ CÓ BẢN LƯU)
+                // 1. TẢI DỰ ÁN TỪ MÁY CHỦ TRUNG TÂM (NẾU ĐÃ CÓ BẢN LƯU)
                 const restored = await restoreProjectFromCloudflare(roomId);
                 if (!restored) {
-                    console.log("[Collab ☁️] Phòng mới tinh! Đang tạo bản lưu gốc lên Cloudflare...");
+                    console.log("[DANV Workspace ☁️] Khởi tạo không gian làm việc mới. Bắt đầu thiết lập điểm khôi phục gốc...");
                     scheduleCloudflareSave(500);
                 }
 
-                // 2. KẾT NỐI VÀO PHÒNG LIVEBLOCKS (CHO CHUỘT, CHAT & KHÓA VẼ)
+                // 2. THIẾT LẬP KÊNH THỜI GIAN THỰC (ĐỒNG BỘ CHUỘT, NHẮN TIN, BẢO MẬT TÀI NGUYÊN)
                 const response = client.enterRoom(roomId, {
                     initialPresence: { cursor: null, editingCostume: null, name: myUserName },
                     initialStorage: { sharedBlocks: new LiveMap() }
@@ -1360,8 +1360,8 @@
                     }
 
                     if (event.type === 'SYNC_CLOUD_REFRESH') {
-                        console.log("[Collab ☁️] Có thành viên tải dự án mới, đang đồng bộ toàn bộ...");
-                        showLoadingScreen('Đang nhận dự án mới...', 'Thành viên trong phòng vừa nạp dự án từ máy tính...', 35);
+                        console.log("[DANV Workspace ☁️] Phát hiện sự kiện nạp dự án. Đang đồng bộ thay đổi...");
+                        showLoadingScreen('Đang cập nhật thay đổi...', 'Hệ thống phát hiện tệp tin mới từ thành viên, đang tiến hành lấy dữ liệu...', 35);
                         restoreProjectFromCloudflare(currentRoomId).then(() => {
                             setTimeout(() => hideLoadingScreen(), 400);
                         });
