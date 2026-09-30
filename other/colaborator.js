@@ -378,10 +378,16 @@
         for (const c of (target.sprite.costumes || [])) {
             let asset = c.asset;
             if (!asset && c.assetId && Scratch.vm.runtime.storage) asset = Scratch.vm.runtime.storage.get(c.assetId);
+            
             if (asset && asset.data) {
                 const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
                 const mime = c.dataFormat === 'svg' ? 'image/svg+xml' : 'image/png';
                 tasks.push(uploadAssetBinaryToR2(fName, asset.data, mime));
+            } else if (asset && typeof asset.encodeTextData === 'function' && c.dataFormat === 'svg') {
+                const textData = asset.encodeTextData();
+                const encoded = new TextEncoder().encode(textData);
+                const fName = c.md5ext || `${c.assetId}.${c.dataFormat}`;
+                tasks.push(uploadAssetBinaryToR2(fName, encoded, 'image/svg+xml'));
             }
         }
 
@@ -1237,8 +1243,8 @@
         };
 
         const originalAddCostume = targetProto.addCostume;
-        targetProto.addCostume = function(costume, optIndex) {
-            const result = originalAddCostume.call(this, costume, optIndex);
+        targetProto.addCostume = async function(costume, optIndex) {
+            const result = await originalAddCostume.call(this, costume, optIndex);
             if (!isRemoteActive() && room) scheduleCloudflareSave(800, true, true);
             return result;
         };
@@ -1326,8 +1332,8 @@
         // BẮT SỰ KIỆN VẼ / CHỈNH SỬA TRANG PHỤC VECTOR (SVG)
         if (Scratch.vm.updateSvg) {
             const originalUpdateSvg = Scratch.vm.updateSvg;
-            Scratch.vm.updateSvg = function(costumeIndex, svgText, rotationCenterX, rotationCenterY) {
-                const result = originalUpdateSvg.call(this, costumeIndex, svgText, rotationCenterX, rotationCenterY);
+            Scratch.vm.updateSvg = async function(costumeIndex, svgText, rotationCenterX, rotationCenterY) {
+                const result = await originalUpdateSvg.call(this, costumeIndex, svgText, rotationCenterX, rotationCenterY);
                 if (!isRemoteActive() && room) {
                     scheduleCloudflareSave(1000, true, true);
                 }
@@ -1338,8 +1344,8 @@
         // BẮT SỰ KIỆN VẼ / CHỈNH SỬA TRANG PHỤC BITMAP
         if (Scratch.vm.updateBitmap) {
             const originalUpdateBitmap = Scratch.vm.updateBitmap;
-            Scratch.vm.updateBitmap = function(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
-                const result = originalUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
+            Scratch.vm.updateBitmap = async function(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
+                const result = await originalUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
                 if (!isRemoteActive() && room) {
                     scheduleCloudflareSave(1000, true, true);
                 }
