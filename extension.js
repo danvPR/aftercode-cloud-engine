@@ -10,6 +10,22 @@
 
   let currentServerUrl = DEFAULT_SERVER;
   let lastRequestTime = 0;
+  let requestQueue = Promise.resolve();
+
+  // Cơ chế Rate-limit ngầm: tự động xếp hàng và chờ tới lượt thay vì báo lỗi
+  async function waitForNextTurn() {
+    const nextTurn = requestQueue.then(async () => {
+      const now = Date.now();
+      const elapsed = now - lastRequestTime;
+      if (elapsed < cacheCooldownMs) {
+        // Tạm dừng khối lệnh đúng số mili-giây còn thiếu
+        await new Promise((resolve) => setTimeout(resolve, cacheCooldownMs - elapsed));
+      }
+      lastRequestTime = Date.now();
+    });
+    requestQueue = nextTurn.catch(() => {});
+    await nextTurn;
+  }
   
   let currentProjectId = "default_project";
   let isEmbeddedMode = false;
@@ -381,9 +397,8 @@
         return;
       }
 
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      lastRequestTime = now; dbStatus = "SAVING_VAR";
+      await waitForNextTurn();
+      dbStatus = "SAVING_VAR";
       try {
         const res = await fetchWithTimeout(`${currentServerUrl}/api/var/set`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -407,9 +422,8 @@
         return;
       }
 
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      lastRequestTime = now; dbStatus = "LOADING_VAR";
+      await waitForNextTurn();
+      dbStatus = "LOADING_VAR";
       try {
         const res = await fetchWithTimeout(`${currentServerUrl}/api/var/get`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -445,9 +459,8 @@
         return;
       }
 
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      lastRequestTime = now; dbStatus = "SAVING";
+      await waitForNextTurn();
+      dbStatus = "SAVING";
       try {
         const res = await fetchWithTimeout(`${currentServerUrl}/api/save`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -470,9 +483,8 @@
         return;
       }
 
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      lastRequestTime = now; dbStatus = "LOADING";
+      await waitForNextTurn();
+      dbStatus = "LOADING";
       try {
         const res = await fetchWithTimeout(`${currentServerUrl}/api/load/${encodeURIComponent(currentProjectId)}/${encodeURIComponent(user)}`);
         const json = await res.json();
@@ -512,9 +524,8 @@
         return;
       }
 
-      const now = Date.now();
-      if (now - lastRequestTime < cacheCooldownMs) { dbStatus = "RATE_LIMITED"; return; }
-      lastRequestTime = now; dbStatus = "LOADING_BATCH";
+      await waitForNextTurn();
+      dbStatus = "LOADING_BATCH";
       try {
         const res = await fetchWithTimeout(`${currentServerUrl}/api/load-batch`, {
           method: "POST", headers: { "Content-Type": "application/json" },
