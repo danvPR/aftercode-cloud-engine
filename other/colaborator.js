@@ -112,22 +112,30 @@
 
     // --- HỆ THỐNG ĐỒNG BỘ DỰ ÁN 24/7 VỚI CLOUDFLARE ---
     let cloudflareSaveTimer = null;
-    function scheduleCloudflareSave(delay = 2000) {
+    function scheduleCloudflareSave(delay = 1500, broadcastAfter = false) {
         if (!currentRoomId || isRemoteActive()) return;
         if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
         cloudflareSaveTimer = setTimeout(async () => {
             try {
-                // Tải toàn bộ tài nguyên nhị phân lên Cloudflare R2 trước
+                // 1. Tải toàn bộ tài nguyên nhị phân lên Cloudflare R2 trước
                 for (const t of Scratch.vm.runtime.targets) {
                     await syncTargetAssetsToR2(t);
                 }
+                // 2. Tải snapshot dự án lên Cloudflare Durable Object
                 const snapshot = packCurrentProject();
-                await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
+                const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(snapshot)
                 });
-                console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ và đồng bộ tài nguyên dự án.");
+
+                if (res.ok) {
+                    console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ và đồng bộ tài nguyên dự án.");
+                    // CHỈ PHÁT SÓNG CHO CÁC MÁY KHÁC SAU KHI DỮ LIỆU ĐÃ LÊN MÁY CHỦ
+                    if (broadcastAfter && room) {
+                        room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
+                    }
+                }
             } catch (e) {
                 console.error("[DANV Workspace ❌] Lỗi kết nối tới máy chủ lưu trữ:", e);
             }
@@ -240,7 +248,9 @@
 
                         let target = Scratch.vm.runtime.targets.find(t => !t.isStage && t.sprite.name === spData.name);
                         if (!target) {
-                            const added = await Scratch.vm.addSprite(spData.targetJSON);
+                            // Xóa rỗng danh sách costume/sound tạm thời khi khởi tạo để tránh lỗi thiếu cache assets
+                            const cleanJSON = Object.assign({}, spData.targetJSON, { costumes: [], sounds: [], blocks: {} });
+                            const added = await Scratch.vm.addSprite(cleanJSON);
                             target = (added && added.id ? added : (Array.isArray(added) ? added[0] : null))
                                 || Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
                         }
@@ -254,6 +264,13 @@
                                 for (const c of spData.costumes) {
                                     const cObj = await deserializeCostume(c);
                                     if (cObj) target.addCostume(cObj);
+                                }
+                                // Cập nhật lại costume hiện tại và dựng lại hình ảnh trên WebGL
+                                const cIdx = (spData.targetJSON && typeof spData.targetJSON.currentCostume === 'number') 
+                                    ? spData.targetJSON.currentCostume : (target.currentCostume || 0);
+                                target.setCostume(cIdx);
+                                if (typeof target.updateAllDrawableProperties === 'function') {
+                                    target.updateAllDrawableProperties();
                                 }
                             }
                             if (spData.sounds) {
@@ -885,7 +902,10 @@
 
     function releaseCostumeLock() {
         if (activeCostumeLockTimeout) { clearTimeout(activeCostumeLockTimeout); activeCostumeLockTimeout = null; }
-        if (room) room.updatePresence({ editingCostume: null });
+        if (room) {
+            room.updatePresence({ editingCostume: null });
+            if (!isApplyingRemote) scheduleCloudflareSave(300, true);
+        }
     }
 
     let paintCurtainEl = null;
@@ -1095,7 +1115,7 @@
         const originalAddCostume = targetProto.addCostume;
         targetProto.addCostume = function(costume, optIndex) {
             const result = originalAddCostume.call(this, costume, optIndex);
-            if (!isApplyingRemote && room) scheduleCloudflareSave(1500);
+            if (!isApplyingRemote && room) scheduleCloudflareSave(800, true);
             return result;
         };
 
@@ -1103,7 +1123,7 @@
             const originalDeleteCostume = targetProto.deleteCostume;
             targetProto.deleteCostume = function(index) {
                 const result = originalDeleteCostume.call(this, index);
-                if (!isApplyingRemote && room) scheduleCloudflareSave(1500);
+                if (!isApplyingRemote && room) scheduleCloudflareSave(800, true);
                 return result;
             };
         }
@@ -1149,35 +1169,83 @@
             }
         };
 
+        // BẮT SỰ KIỆN TẠO SPRITE MỚI
         const originalAddSprite = Scratch.vm.addSprite;
         Scratch.vm.addSprite = async function(input) {
             const result = await originalAddSprite.call(this, input);
             if (!isRemoteActive() && room) {
-                scheduleCloudflareSave(1000);
-                room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
+                scheduleCloudflareSave(300, true);
             }
             return result;
         };
 
+        // BẮT SỰ KIỆN NHÂN BẢN SPRITE
         const originalDuplicateSprite = Scratch.vm.duplicateSprite;
         Scratch.vm.duplicateSprite = async function(targetId) {
             const result = await originalDuplicateSprite.call(this, targetId);
             if (!isRemoteActive() && room) {
-                scheduleCloudflareSave(1000);
-                room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
+                scheduleCloudflareSave(300, true);
             }
             return result;
         };
 
+        // BẮT SỰ KIỆN XÓA SPRITE
         const originalDeleteSprite = Scratch.vm.deleteSprite;
         Scratch.vm.deleteSprite = function(targetId) {
             const result = originalDeleteSprite.call(this, targetId);
             if (!isRemoteActive() && room) {
-                scheduleCloudflareSave(1000);
-                room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
+                scheduleCloudflareSave(300, true);
             }
             return result;
         };
+
+        // BẮT SỰ KIỆN VẼ / CHỈNH SỬA TRANG PHỤC VECTOR (SVG)
+        if (Scratch.vm.updateSvg) {
+            const originalUpdateSvg = Scratch.vm.updateSvg;
+            Scratch.vm.updateSvg = function(costumeIndex, svgText, rotationCenterX, rotationCenterY) {
+                const result = originalUpdateSvg.call(this, costumeIndex, svgText, rotationCenterX, rotationCenterY);
+                if (!isRemoteActive() && room) {
+                    scheduleCloudflareSave(1000, true);
+                }
+                return result;
+            };
+        }
+
+        // BẮT SỰ KIỆN VẼ / CHỈNH SỬA TRANG PHỤC BITMAP
+        if (Scratch.vm.updateBitmap) {
+            const originalUpdateBitmap = Scratch.vm.updateBitmap;
+            Scratch.vm.updateBitmap = function(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
+                const result = originalUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
+                if (!isRemoteActive() && room) {
+                    scheduleCloudflareSave(1000, true);
+                }
+                return result;
+            };
+        }
+
+        // BẮT SỰ KIỆN ĐỔI TÊN TRANG PHỤC
+        if (Scratch.vm.renameCostume) {
+            const originalRenameCostume = Scratch.vm.renameCostume;
+            Scratch.vm.renameCostume = function(costumeIndex, newName) {
+                const result = originalRenameCostume.call(this, costumeIndex, newName);
+                if (!isRemoteActive() && room) {
+                    scheduleCloudflareSave(800, true);
+                }
+                return result;
+            };
+        }
+
+        // BẮT SỰ KIỆN THAY ĐỔI THỨ TỰ TRANG PHỤC
+        if (Scratch.vm.reorderCostume) {
+            const originalReorderCostume = Scratch.vm.reorderCostume;
+            Scratch.vm.reorderCostume = function(costumeIndex, newIndex) {
+                const result = originalReorderCostume.call(this, costumeIndex, newIndex);
+                if (!isRemoteActive() && room) {
+                    scheduleCloudflareSave(800, true);
+                }
+                return result;
+            };
+        }
 
         // BẮT SỰ KIỆN NẠP DỰ ÁN MỚI TỪ MÁY TÍNH (.SB3)
         const originalLoadProject = Scratch.vm.loadProject;
