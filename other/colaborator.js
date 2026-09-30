@@ -110,6 +110,51 @@
         setTimeout(() => { if (loadingOverlayEl) loadingOverlayEl.style.display = 'none'; }, 250);
     }
 
+    // --- BỘ ĐỒNG BỘ TIỆN ÍCH MỞ RỘNG (CHỈ ÁP DỤNG EXTENSION CHÍNH THỨC AN TOÀN) ---
+    function getLoadedExtensionIds() {
+        const extMgr = Scratch.vm && Scratch.vm.extensionManager;
+        if (!extMgr) return [];
+        let ids = [];
+        if (extMgr._loadedExtensions) {
+            if (typeof extMgr._loadedExtensions.keys === 'function') {
+                ids = Array.from(extMgr._loadedExtensions.keys());
+            } else if (Array.isArray(extMgr._loadedExtensions)) {
+                ids = Array.from(extMgr._loadedExtensions);
+            }
+        }
+        // BẢO MẬT: Chỉ lấy ID hợp lệ (chữ, số, gạch nối, gạch dưới)
+        // Tuyệt đối BỎ QUA extension custom (chứa url https://, data:, blob:, file:,...)
+        return ids.filter(id =>
+            id !== 'liveblockscollab' &&
+            typeof id === 'string' &&
+            /^[a-zA-Z0-9_\-]+$/.test(id) &&
+            !id.includes('://') &&
+            !id.startsWith('data:')
+        );
+    }
+
+    async function loadSafeExtension(extId) {
+        const extMgr = Scratch.vm && Scratch.vm.extensionManager;
+        if (!extMgr || !extId) return;
+        // BẢO VỆ CHẶN TẬN GỐC: Không chấp nhận bất kỳ mã/URL custom độc hại nào
+        if (typeof extId !== 'string' || !/^[a-zA-Z0-9_\-]+$/.test(extId) || extId === 'liveblockscollab') {
+            return;
+        }
+        if (typeof extMgr.isExtensionLoaded === 'function' && extMgr.isExtensionLoaded(extId)) {
+            return;
+        }
+        try {
+            if (typeof extMgr.loadExtensionURL === 'function') {
+                await extMgr.loadExtensionURL(extId);
+            } else if (typeof extMgr.loadExtensionIdSync === 'function') {
+                extMgr.loadExtensionIdSync(extId);
+            }
+            console.log("[DANV Workspace 🧩] Đã nạp tiện ích an toàn:", extId);
+        } catch (err) {
+            console.warn("[DANV Workspace ⚠️] Không thể tự động nạp tiện ích:", extId, err);
+        }
+    }
+
     // --- HỆ THỐNG ĐỒNG BỘ DỰ ÁN 24/7 VỚI CLOUDFLARE ---
     let cloudflareSaveTimer = null;
     let pendingAssetSync = false;
@@ -191,7 +236,12 @@
             });
         }
 
-        return { stage: stageData, sprites: spritesData, timestamp: Date.now() };
+        return {
+            stage: stageData,
+            sprites: spritesData,
+            extensions: getLoadedExtensionIds(),
+            timestamp: Date.now()
+        };
     }
 
     async function restoreProjectFromCloudflare(roomId, isBackground = false) {
@@ -205,6 +255,13 @@
             const snapshot = resJson.data;
             enterRemoteScope();
             try {
+                // 0. Nạp trước các tiện ích mở rộng an toàn để tránh bị biến thành khối đỏ (Red/Obsolete Blocks)
+                if (snapshot.extensions && Array.isArray(snapshot.extensions)) {
+                    for (const extId of snapshot.extensions) {
+                        await loadSafeExtension(extId);
+                    }
+                }
+
                 // 1. Nạp Sân khấu (Stage)
                 const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
                 if (stageTarget && snapshot.stage) {
@@ -1333,6 +1390,36 @@
             }
         };
 
+        // BẮT SỰ KIỆN NẠP TIỆN ÍCH MỞ RỘNG (CHỈ ĐỒNG BỘ TIỆN ÍCH AN TOÀN)
+        const extMgr = Scratch.vm.extensionManager;
+        if (extMgr && !extMgr._hasCollabHook) {
+            extMgr._hasCollabHook = true;
+
+            const originalLoadExtURL = extMgr.loadExtensionURL;
+            if (typeof originalLoadExtURL === 'function') {
+                extMgr.loadExtensionURL = async function(urlOrId) {
+                    const result = await originalLoadExtURL.call(this, urlOrId);
+                    if (!isRemoteActive() && room && typeof urlOrId === 'string' && /^[a-zA-Z0-9_\-]+$/.test(urlOrId) && urlOrId !== 'liveblockscollab') {
+                        room.broadcastEvent({ type: 'SYNC_EXTENSION_ADDED', extId: urlOrId });
+                        scheduleCloudflareSave(1200);
+                    }
+                    return result;
+                };
+            }
+
+            const originalLoadExtSync = extMgr.loadExtensionIdSync;
+            if (typeof originalLoadExtSync === 'function') {
+                extMgr.loadExtensionIdSync = function(extId) {
+                    const result = originalLoadExtSync.call(this, extId);
+                    if (!isRemoteActive() && room && typeof extId === 'string' && /^[a-zA-Z0-9_\-]+$/.test(extId) && extId !== 'liveblockscollab') {
+                        room.broadcastEvent({ type: 'SYNC_EXTENSION_ADDED', extId: extId });
+                        scheduleCloudflareSave(1200);
+                    }
+                    return result;
+                };
+            }
+        }
+
         // BẮT SỰ KIỆN TẠO SPRITE MỚI
         const originalAddSprite = Scratch.vm.addSprite;
         Scratch.vm.addSprite = async function(input) {
@@ -1568,6 +1655,14 @@
 
                 room.subscribe("event", ({ event }) => {
                     if (event.type === 'CHAT_MESSAGE') appendChatMessage(event);
+
+                    if (event.type === 'SYNC_EXTENSION_ADDED') {
+                        if (event.extId) {
+                            loadSafeExtension(event.extId).then(() => {
+                                Scratch.vm.emitWorkspaceUpdate();
+                            });
+                        }
+                    }
 
                     if (event.type === 'SYNC_SPRITE_PROP') {
                         const target = getTargetBySyncKey(event.spriteKey);
