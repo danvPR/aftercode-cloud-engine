@@ -112,16 +112,36 @@
 
     // --- HỆ THỐNG ĐỒNG BỘ DỰ ÁN 24/7 VỚI CLOUDFLARE ---
     let cloudflareSaveTimer = null;
-    function scheduleCloudflareSave(delay = 1500, broadcastAfter = false) {
+    let pendingAssetSync = false;
+
+    function disposeTargetSkins(target) {
+        if (!target || !target.sprite || !Scratch.vm.runtime.renderer) return;
+        for (const c of (target.sprite.costumes || [])) {
+            if (c && c.skinId !== undefined && c.skinId !== null) {
+                try {
+                    Scratch.vm.runtime.renderer.destroySkin(c.skinId);
+                } catch (e) {}
+                c.skinId = null;
+            }
+        }
+    }
+
+    function scheduleCloudflareSave(delay = 1500, broadcastAfter = false, syncAssets = false) {
         if (!currentRoomId || isRemoteActive()) return;
+        if (syncAssets) pendingAssetSync = true;
         if (cloudflareSaveTimer) clearTimeout(cloudflareSaveTimer);
+        
         cloudflareSaveTimer = setTimeout(async () => {
             try {
-                // 1. Tải toàn bộ tài nguyên nhị phân lên Cloudflare R2 trước
-                for (const t of Scratch.vm.runtime.targets) {
-                    await syncTargetAssetsToR2(t);
+                // CHỈ đồng bộ assets lên R2 khi có cờ pendingAssetSync (tránh spam request HEAD)
+                if (pendingAssetSync) {
+                    for (const t of Scratch.vm.runtime.targets) {
+                        await syncTargetAssetsToR2(t);
+                    }
+                    pendingAssetSync = false;
                 }
-                // 2. Tải snapshot dự án lên Cloudflare Durable Object
+                
+                // Tải snapshot dự án lên Cloudflare Durable Object
                 const snapshot = packCurrentProject();
                 const res = await fetch(`${CLOUDFLARE_URL}/project?room=${encodeURIComponent(currentRoomId)}`, {
                     method: 'POST',
@@ -130,8 +150,7 @@
                 });
 
                 if (res.ok) {
-                    console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ và đồng bộ tài nguyên dự án.");
-                    // CHỈ PHÁT SÓNG CHO CÁC MÁY KHÁC SAU KHI DỮ LIỆU ĐÃ LÊN MÁY CHỦ
+                    console.log("[DANV Workspace ☁️] Đã sao lưu tiến độ dự án.");
                     if (broadcastAfter && room) {
                         room.broadcastEvent({ type: 'SYNC_CLOUD_REFRESH' });
                     }
@@ -166,7 +185,9 @@
                 costumes: (sp.sprite.costumes || []).map(serializeCostume),
                 sounds: (sp.sprite.sounds || []).map(serializeSound),
                 blocks: sp.blocks ? sp.blocks._blocks : {},
-                comments: sp.blocks ? sp.blocks._comments : {}
+                comments: sp.blocks ? sp.blocks._comments : {},
+                // Lưu thêm biến cục bộ của Sprite
+                variables: sp.variables ? JSON.parse(JSON.stringify(sp.variables)) : {}
             });
         }
 
@@ -188,6 +209,7 @@
                 const stageTarget = Scratch.vm.runtime.targets.find(t => t.isStage);
                 if (stageTarget && snapshot.stage) {
                     if (snapshot.stage.costumes) {
+                        disposeTargetSkins(stageTarget);
                         stageTarget.sprite.costumes = [];
                         for (const c of snapshot.stage.costumes) {
                             const cObj = await deserializeCostume(c);
@@ -260,12 +282,12 @@
                                 target.sprite.name = spData.name;
                             }
                             if (spData.costumes) {
+                                disposeTargetSkins(target);
                                 target.sprite.costumes = [];
                                 for (const c of spData.costumes) {
                                     const cObj = await deserializeCostume(c);
                                     if (cObj) target.addCostume(cObj);
                                 }
-                                // Cập nhật lại costume hiện tại và dựng lại hình ảnh trên WebGL
                                 const cIdx = (spData.targetJSON && typeof spData.targetJSON.currentCostume === 'number') 
                                     ? spData.targetJSON.currentCostume : (target.currentCostume || 0);
                                 target.setCostume(cIdx);
@@ -278,6 +300,18 @@
                                 for (const s of spData.sounds) {
                                     const sObj = await deserializeSound(s);
                                     if (sObj) target.sprite.sounds.push(sObj);
+                                }
+                            }
+                            if (spData.variables) {
+                                for (const varId in spData.variables) {
+                                    const vData = spData.variables[varId];
+                                    if (!target.variables[varId] && typeof target.createVariable === 'function') {
+                                        target.createVariable(vData.id, vData.name, vData.type, vData.isCloud);
+                                    }
+                                    if (target.variables[varId]) {
+                                        target.variables[varId].name = vData.name;
+                                        target.variables[varId].value = vData.value;
+                                    }
                                 }
                             }
                             if (spData.blocks) {
@@ -847,6 +881,7 @@
 
     function leaveCollabRoom() {
         if (!room) return;
+        document.removeEventListener('mousemove', onGlobalMouseMove);
         try {
             releaseCostumeLock();
             client.leave(currentRoomId);
@@ -973,7 +1008,11 @@
         if (lockOverlay) lockOverlay.style.opacity = '0';
     }
 
+    let hasSetupCostumeListeners = false;
     function setupCostumeInteractionListeners() {
+        if (hasSetupCostumeListeners) return;
+        hasSetupCostumeListeners = true;
+
         const handleInteraction = (e) => {
             if (!room || isApplyingRemote) return;
             const target = Scratch.vm.editingTarget;
@@ -1005,6 +1044,17 @@
             }, 60);
         }, true);
     }
+
+    const onGlobalMouseMove = (e) => {
+        if (!room) return;
+        const now = Date.now();
+        if (now - lastMouseTime > 85) { // Tối ưu: 85ms (~11.7 fps) tiết kiệm 45% request presence
+            const relX = e.clientX / Math.max(1, window.innerWidth);
+            const relY = e.clientY / Math.max(1, window.innerHeight);
+            room.updatePresence({ cursor: { x: relX, y: relY }, name: myUserName });
+            lastMouseTime = now;
+        }
+    };
 
     function setupDOM() {
         if (!cursorsContainer) {
@@ -1076,9 +1126,11 @@
         const originalSetXY = targetProto.setXY;
         targetProto.setXY = function(x, y, force) {
             originalSetXY.call(this, x, y, force);
+            // NGẮT ĐỒNG BỘ NẾU DỰ ÁN ĐANG CHẠY (GREEN FLAG) ĐỂ TRÁNH SPAM WS
+            if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isApplyingRemote && room && this.isOriginal) {
                 const now = Date.now();
-                if (now - (this._lastXYSync || 0) > 40) {
+                if (now - (this._lastXYSync || 0) > 60) {
                     this._lastXYSync = now;
                     room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'xy', value: { x: this.x, y: this.y } });
                 }
@@ -1088,34 +1140,37 @@
         const originalSetSize = targetProto.setSize;
         targetProto.setSize = function(size) {
             originalSetSize.call(this, size);
+            if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isApplyingRemote && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'size', value: this.size });
-                scheduleCloudflareSave(3000);
+                scheduleCloudflareSave(3000, false, false);
             }
         };
 
         const originalSetDirection = targetProto.setDirection;
         targetProto.setDirection = function(dir) {
             originalSetDirection.call(this, dir);
+            if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isApplyingRemote && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'direction', value: this.direction });
-                scheduleCloudflareSave(3000);
+                scheduleCloudflareSave(3000, false, false);
             }
         };
 
         const originalSetCostume = targetProto.setCostume;
         targetProto.setCostume = function(index) {
             originalSetCostume.call(this, index);
+            if (Scratch.vm.runtime && Scratch.vm.runtime.isPlaying) return;
             if (!isApplyingRemote && room && this.isOriginal) {
                 room.broadcastEvent({ type: 'SYNC_SPRITE_PROP', spriteKey: getSyncKey(this), prop: 'costume', value: this.currentCostume });
-                scheduleCloudflareSave(3000);
+                scheduleCloudflareSave(3000, false, false);
             }
         };
 
         const originalAddCostume = targetProto.addCostume;
         targetProto.addCostume = function(costume, optIndex) {
             const result = originalAddCostume.call(this, costume, optIndex);
-            if (!isApplyingRemote && room) scheduleCloudflareSave(800, true);
+            if (!isApplyingRemote && room) scheduleCloudflareSave(800, true, true);
             return result;
         };
 
@@ -1123,7 +1178,7 @@
             const originalDeleteCostume = targetProto.deleteCostume;
             targetProto.deleteCostume = function(index) {
                 const result = originalDeleteCostume.call(this, index);
-                if (!isApplyingRemote && room) scheduleCloudflareSave(800, true);
+                if (!isApplyingRemote && room) scheduleCloudflareSave(800, true, false);
                 return result;
             };
         }
@@ -1205,7 +1260,7 @@
             Scratch.vm.updateSvg = function(costumeIndex, svgText, rotationCenterX, rotationCenterY) {
                 const result = originalUpdateSvg.call(this, costumeIndex, svgText, rotationCenterX, rotationCenterY);
                 if (!isRemoteActive() && room) {
-                    scheduleCloudflareSave(1000, true);
+                    scheduleCloudflareSave(1000, true, true);
                 }
                 return result;
             };
@@ -1217,7 +1272,7 @@
             Scratch.vm.updateBitmap = function(costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution) {
                 const result = originalUpdateBitmap.call(this, costumeIndex, bitmap, rotationCenterX, rotationCenterY, bitmapResolution);
                 if (!isRemoteActive() && room) {
-                    scheduleCloudflareSave(1000, true);
+                    scheduleCloudflareSave(1000, true, true);
                 }
                 return result;
             };
@@ -1345,14 +1400,8 @@
                 });
                 room = response.room;
 
-                document.addEventListener('mousemove', (e) => {
-                    if (Date.now() - lastMouseTime > 50 && room) {
-                        const relX = e.clientX / Math.max(1, window.innerWidth);
-                        const relY = e.clientY / Math.max(1, window.innerHeight);
-                        room.updatePresence({ cursor: { x: relX, y: relY }, name: myUserName });
-                        lastMouseTime = Date.now();
-                    }
-                });
+                document.removeEventListener('mousemove', onGlobalMouseMove);
+                document.addEventListener('mousemove', onGlobalMouseMove);
 
                 room.subscribe("others", () => {
                     const others = room.getOthers();
