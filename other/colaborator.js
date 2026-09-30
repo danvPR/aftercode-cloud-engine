@@ -175,8 +175,12 @@
             const tj = sp.toJSON();
             tj.blocks = {};
             tj.sounds = [];
+            // Đảm bảo ID luôn là String và loại bỏ order nội bộ để tránh lỗi React Warning với Addon Reorder Sprites
+            tj.id = String(sp.id || tj.id || ('sprite_' + Date.now()));
+            delete tj.order;
+
             spritesData.push({
-                name: sp.sprite.name,
+                name: String(sp.sprite.name),
                 targetJSON: tj,
                 costumes: (sp.sprite.costumes || []).map(serializeCostume),
                 sounds: (sp.sprite.sounds || []).map(serializeSound),
@@ -281,9 +285,16 @@
 
                         if (!target) {
                             const cleanJSON = Object.assign({}, spData.targetJSON, { costumes: initialCostumes, sounds: [], blocks: {} });
+                            if (cleanJSON.id !== undefined && cleanJSON.id !== null) {
+                                cleanJSON.id = String(cleanJSON.id);
+                            }
+                            delete cleanJSON.order;
                             const added = await Scratch.vm.addSprite(cleanJSON);
                             target = (added && added.id ? added : (Array.isArray(added) ? added[0] : null))
                                 || Scratch.vm.runtime.targets[Scratch.vm.runtime.targets.length - 1];
+                            if (target && target.id !== undefined) {
+                                target.id = String(target.id);
+                            }
                         }
 
                         if (target) {
@@ -351,11 +362,8 @@
     async function uploadAssetBinaryToR2(fileName, dataBuffer, mimeType) {
         if (!fileName || !dataBuffer || uploadedR2Assets.has(fileName)) return true;
         try {
-            const headCheck = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`, { method: 'HEAD' });
-            if (headCheck.ok) {
-                uploadedR2Assets.add(fileName);
-                return true;
-            }
+            // Đẩy thẳng PUT (Backend D1 đã có ON CONFLICT DO NOTHING bảo vệ trùng lặp)
+            // Giúp tiết kiệm 50% request lên Worker và loại bỏ hoàn toàn lỗi đỏ 404 của HEAD trên Console
             const res = await fetch(`${CLOUDFLARE_URL}/asset/${encodeURIComponent(fileName)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': mimeType || 'application/octet-stream' },
